@@ -57,6 +57,23 @@ internal static class NativeMethods
     internal const int DWMWA_BORDER_COLOR = 34;
     internal const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
     internal const int DWMWCP_ROUND = 2;
+
+    /// <summary>
+    /// 不要圆角。
+    ///
+    /// ★ 这是"条子下面有一块黑色阴影"的头号嫌疑。
+    ///   DWM 的圆角半径约 8px，而收起态窗口只有 11px 高 ——
+    ///   圆角比窗口还高，DWM 在这种扁窗口上画圆角就会产生黑边/黑块。
+    ///   2mm 的线根本不需要圆角，直接关掉。
+    /// </summary>
+    internal const int DWMWCP_DONOTROUND = 1;
+
+    /// <summary>非客户区渲染策略</summary>
+    internal const int DWMWA_NCRENDERING_POLICY = 2;
+
+    /// <summary>关掉非客户区渲染 —— 去掉 DWM 给窗口画的投影（第二个嫌疑）</summary>
+    internal const int DWMNCRP_DISABLED = 1;
+
     internal const uint DWMWA_COLOR_NONE = 0xFFFFFFFE;
 
     // ── GetAsyncKeyState ────────────────────────────────────────────

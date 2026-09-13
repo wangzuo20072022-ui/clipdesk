@@ -37,11 +37,35 @@ namespace S2Strip;
 internal sealed class StripPanelWindow : Window
 {
     private static readonly Color PanelBg = Color.FromRgb(0x1C, 0x1C, 0x1C);
-    private static readonly Color StripBg = Color.FromRgb(0x8A, 0x8A, 0x8A);
+
+    /// <summary>
+    /// 条子颜色。
+    ///
+    /// ★ 用户明确要求「条子颜色调亮一点，不然在黑色背景下看不清」。
+    ///   第一轮用的 0x8A8A8A 在深色壁纸/深色窗口上确实糊成一片。
+    ///   现在用接近白的浅灰，并在下面垫一层柔和的发光边框，
+    ///   保证不管背景是什么颜色都看得见。
+    /// </summary>
+    private static readonly Color StripBg = Color.FromRgb(0xF0, 0xF0, 0xF0);
+    private static readonly Color StripGlow = Color.FromRgb(0x66, 0x66, 0x66);
+
     private static readonly Color RowBg = Color.FromRgb(0x2A, 0x2A, 0x2A);
     private static readonly Color RowHover = Color.FromRgb(0x3D, 0x3D, 0x3D);
     private static readonly Color RowBorder = Color.FromRgb(0x3A, 0x3A, 0x3A);
     private static readonly Color Accent = Color.FromRgb(0x8C, 0xD0, 0xFF);
+
+    /// <summary>
+    /// 滚轮一步滚多少 DIP。
+    ///
+    /// ★ 第一轮 48 DIP 是错的 —— 用户反馈「往下滚一下下面的文字框正好覆盖掉
+    ///   上面的文字框，视觉上很难辨别是往下滚了还是往上滚了」。
+    ///
+    ///   算一下就知道为什么：第一轮行高约 65 DIP，48 ÷ 65 = 74% ——
+    ///   滚一格后新的行几乎正好盖住旧行原来的位置，**没有参照物发生位移**。
+    ///
+    ///   现在行高约 26 DIP，24 DIP ≈ 0.92 行 —— 明显能看到位移。
+    /// </summary>
+    private const double WheelStepDip = 24.0;
 
     private readonly ClipboardHistory _history;
     private readonly Action<string> _log;
@@ -52,8 +76,8 @@ internal sealed class StripPanelWindow : Window
     private IntPtr _hwnd;
     private double _scale = 1.0;
 
-    /// <summary>锚点（物理像素）：右上角钉在这里</summary>
-    private int _anchorRightPx;
+    /// <summary>锚点（物理像素）：横向是条子**中心**，纵向是顶边</summary>
+    private int _anchorCenterXPx;
     private int _anchorTopPx;
 
     /// <summary>当前是不是展开态</summary>
@@ -65,6 +89,7 @@ internal sealed class StripPanelWindow : Window
     // ── 视觉元素 ───────────────────────────────────────────────────
     private Border _panel = null!;
     private Border _strip = null!;
+    private Border _stripGlow = null!;
     private ScrollViewer _scroll = null!;
     private StackPanel _list = null!;
     private TextBlock _title = null!;
@@ -85,7 +110,9 @@ internal sealed class StripPanelWindow : Window
         //   将来换亚克力材质时 DWM 就无处可插了（CLAUDE.md 硬约束 2）。
         AllowsTransparency = false;
 
-        // 背景设为深色 —— 窗口比可见条子大一点点，多出来的部分靠 SetWindowRgn 裁掉
+        // 背景设为深色。
+        // 收起态时窗口 = 条子本身，这块深色会被条子完全盖住；
+        // 展开态时它就是面板的底色。
         Background = new SolidColorBrush(PanelBg);
 
         Content = BuildContent();
@@ -125,15 +152,31 @@ internal sealed class StripPanelWindow : Window
         Grid.SetRow(_scroll, 1);
         pane.Children.Add(_scroll);
 
-        // ② 条子：贴窗口上边缘、右对齐，真实 1mm 高。
-        //    它永远画在窗口最上层（后 add 的在上），所以展开态也看得见 ——
-        //    看起来就像面板是从这条线长出来的。
+        // ② 条子：**尺寸全部写死**，居中铺满窗口。
+        //
+        // ★ 第一轮"条子长度不对"的根因就在这里：
+        //   我只设了 HorizontalAlignment = Right，**没设 Width**。
+        //   Right 对齐 + 无 Width + 无内容 → 期望宽度是 0，
+        //   实际画多宽完全取决于容器怎么摆 —— 于是量出来只有 0.7cm。
+        //
+        //   这是同一个错误的第三次（文字那次是 TextBlock 没定宽把布局撑坏）。
+        //   **规矩：可见元素的宽高一律显式写死，不靠对齐方式推断。**
+        //
+        //   现在窗口尺寸 == 条子尺寸，所以条子直接铺满窗口就行，
+        //   Width/Height 绑到窗口的实际尺寸上（在 ApplyBounds 里同步）。
+        _stripGlow = new Border
+        {
+            Background = new SolidColorBrush(StripGlow),
+            Visibility = Visibility.Collapsed,   // 展开时隐藏，免得在面板顶部留一道浅边
+        };
+        root.Children.Add(_stripGlow);
+
         _strip = new Border
         {
             Background = new SolidColorBrush(StripBg),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Top,
-            Height = Geometry.StripHeightDip,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Cursor = Cursors.Hand,
         };
         root.Children.Add(_strip);
 
@@ -195,7 +238,7 @@ internal sealed class StripPanelWindow : Window
         };
         b.Click += (_, _) =>
         {
-            _scroll.ScrollToVerticalOffset(_scroll.VerticalOffset + direction * 48);
+            _scroll.ScrollToVerticalOffset(_scroll.VerticalOffset + direction * WheelStepDip);
             _log($"  [滚动按钮] {(direction < 0 ? "▲" : "▼")} → 偏移 {_scroll.VerticalOffset:0}");
         };
         return b;
@@ -215,14 +258,28 @@ internal sealed class StripPanelWindow : Window
         int none = unchecked((int)DWMWA_COLOR_NONE);
         DwmSetWindowAttribute(_hwnd, DWMWA_BORDER_COLOR, ref none, sizeof(int));
 
-        int round = DWMWCP_ROUND;
+        // ★ 三件一起关掉"条子下面那块黑影"的来源（用户反馈的问题⑤）：
+        //
+        //   ① 不要圆角。DWM 的圆角半径约 8px，而收起态窗口只有 11px 高 ——
+        //      圆角比窗口还高，DWM 在最扁的窗口上画圆角就会出黑边/黑块。
+        //      2mm 的线根本不需要圆角。
+        //   ② 关掉非客户区渲染 —— 去掉 DWM 给窗口画的投影。
+        //   ③ 边框颜色设 NONE —— Win11 默认那圈 1px 描边。
+        //
+        //   三个都设了还留黑影的话，就只剩"深色背景透过来了"这一种可能，
+        //   那时再查条子有没有真正铺满窗口。
+        int round = DWMWCP_DONOTROUND;
         DwmSetWindowAttribute(_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref round, sizeof(int));
+
+        int ncPolicy = DWMNCRP_DISABLED;
+        DwmSetWindowAttribute(_hwnd, DWMWA_NCRENDERING_POLICY, ref ncPolicy, sizeof(int));
 
         int dark = 1;
         DwmSetWindowAttribute(_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
 
         _log($"  ★ 条子扩展样式: NOACTIVATE="
-             + $"{(GetWindowLongPtr(_hwnd, GWL_EXSTYLE).ToInt64() & WS_EX_NOACTIVATE) != 0}");
+             + $"{(GetWindowLongPtr(_hwnd, GWL_EXSTYLE).ToInt64() & WS_EX_NOACTIVATE) != 0}"
+             + $" / 圆角=不圆 / 投影=关");
     }
 
     /// <summary>
@@ -252,8 +309,9 @@ internal sealed class StripPanelWindow : Window
 
             case WM_MOUSEWHEEL:
                 int delta = unchecked((short)((long)wParam >> 16));
-                _scroll.ScrollToVerticalOffset(_scroll.VerticalOffset - delta / 120.0 * 48);
-                _log($"  [滚轮] ★ 竟然收到了！delta={delta} → 偏移 {_scroll.VerticalOffset:0}");
+                _scroll.ScrollToVerticalOffset(_scroll.VerticalOffset - delta / 120.0 * WheelStepDip);
+                _log($"  [滚轮] 收到 delta={delta} → 偏移 {_scroll.VerticalOffset:0}"
+                     + $"/{_scroll.ScrollableHeight:0}（一步 {WheelStepDip:0} DIP）");
                 handled = true;
                 return IntPtr.Zero;
         }
@@ -265,8 +323,8 @@ internal sealed class StripPanelWindow : Window
 
     /// <summary>命中矩形（物理像素）—— 给轮询线程用</summary>
     public RectPx HitRect => _expanded
-        ? Geometry.ExpandedHitRect(_anchorRightPx, _anchorTopPx, _scale)
-        : Geometry.CollapsedHitRect(_anchorRightPx, _anchorTopPx, _scale);
+        ? Geometry.ExpandedHitRect(_anchorCenterXPx, _anchorTopPx, _scale)
+        : Geometry.CollapsedHitRect(_anchorCenterXPx, _anchorTopPx, _scale);
 
     public bool IsShown => _hwnd != IntPtr.Zero && IsWindowVisible(_hwnd);
 
@@ -283,7 +341,16 @@ internal sealed class StripPanelWindow : Window
         }
     }
 
-    /// <summary>重算锚点：右上角 = 工作区右边 − 边距、上边 + 边距</summary>
+    /// <summary>
+    /// 重算锚点。
+    ///
+    /// ★ 位置按用户第一轮实测后的要求定：
+    ///   · 横向：条子**中心**在工作区宽度的 3/4 处（"右四分之一处"）
+    ///   · 纵向：**紧贴工作区顶部，零缝隙**
+    ///
+    ///   第一轮把条子钉在距右边缘 8 DIP 的右上角，用户反馈"很影响操作"——
+    ///   那个位置正好压着最大化窗口的关闭按钮。
+    /// </summary>
     private void RefreshAnchor()
     {
         GetCursorPos(out POINT cursor);
@@ -294,14 +361,16 @@ internal sealed class StripPanelWindow : Window
         var info = new MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
         if (GetMonitorInfo(monitor, ref info))
         {
-            _anchorRightPx = info.rcWork.Right - Geometry.DipToPx(Geometry.AnchorMarginRight, _scale);
+            int workW = info.rcWork.Right - info.rcWork.Left;
+            _anchorCenterXPx = info.rcWork.Left
+                               + (int)Math.Round(workW * Geometry.CenterAtWidthRatio);
             _anchorTopPx = info.rcWork.Top + Geometry.DipToPx(Geometry.AnchorMarginTop, _scale);
         }
         else
         {
             // 拿不到显示器信息就退回主屏 —— 总比不显示强
-            _anchorRightPx = (int)SystemParameters.PrimaryScreenWidth
-                             - Geometry.DipToPx(Geometry.AnchorMarginRight, _scale);
+            _anchorCenterXPx = (int)Math.Round(
+                (int)SystemParameters.PrimaryScreenWidth * Geometry.CenterAtWidthRatio);
             _anchorTopPx = Geometry.DipToPx(Geometry.AnchorMarginTop, _scale);
         }
     }
@@ -415,8 +484,8 @@ internal sealed class StripPanelWindow : Window
     {
         RefreshAnchor();
 
-        int w = Geometry.DipToPx(Geometry.StripWidthDip, _scale);
-        int h = Geometry.DipToPx(Geometry.StripHeightDip, _scale);
+        int w = Geometry.DipToPx(Geometry.CollapsedWidthDip, _scale);
+        int h = Geometry.DipToPx(Geometry.CollapsedHeightDip, _scale);
 
         // 先挪到屏幕外，别让人看见预热这一下
         SetWindowPos(_hwnd, HWND_TOPMOST, -32000, -32000, w, h,
@@ -435,32 +504,42 @@ internal sealed class StripPanelWindow : Window
 
     // ── 收起 / 展开 ─────────────────────────────────────────────────
 
-    /// <summary>显示成"收起态"：一条细线，鼠标穿透</summary>
+    /// <summary>
+    /// 显示成"收起态"：一条细线。
+    ///
+    /// ★ 窗口尺寸 == 条子尺寸，**没有一寸多余面积** ——
+    ///   用户明确要求「你的条有多大，触发范围就有多大」。
+    ///   第一轮我做成 10mm×10mm 的窗口 + 顶上一小条可见线，
+    ///   命中区是条子面积的 10 倍，被用户否掉了。
+    /// </summary>
     public void ShowCollapsed()
     {
         RefreshAnchor();
 
         _expanded = false;
         _panel.Visibility = Visibility.Collapsed;
+        _stripGlow.Visibility = Visibility.Collapsed;
+        _strip.Visibility = Visibility.Visible;
 
-        int wPx = Geometry.DipToPx(Geometry.StripWidthDip, _scale);
-        int hPx = Geometry.DipToPx(Geometry.StripHeightDip, _scale);
-        int xPx = _anchorRightPx - wPx;
+        int wPx = Geometry.DipToPx(Geometry.CollapsedWidthDip, _scale);
+        int hPx = Geometry.DipToPx(Geometry.CollapsedHeightDip, _scale);
+        int xPx = Geometry.CollapsedLeftPx(_anchorCenterXPx, _scale);
         int yPx = _anchorTopPx;
 
-        ClearClip();                       // 先清掉旧 region，避免尺寸变化后被裁错
+        ClearClip();
         ApplyBounds(xPx, yPx, wPx, hPx, "收起");
-
-        // 把可能被地板顶大的部分裁掉，只留那 1mm
-        ClipToStrip(wPx, hPx);
-
         SetClickThrough(true);
 
         _log($"  [条子] 收起 → 物理({xPx},{yPx}) {wPx}×{hPx}px "
-             + $"缩放{_scale:0.##}× 实际={BoundsText} 穿透={_clickThrough}");
+             + $"中心x={_anchorCenterXPx} 缩放{_scale:0.##}× 实际={BoundsText} 穿透={_clickThrough}");
     }
 
-    /// <summary>显示成"展开态"：黄金比面板，可点击</summary>
+    /// <summary>
+    /// 显示成"展开态"：黄金比面板，可点击。
+    ///
+    /// 与条子**同一个中心 x**，所以面板是向左右同时长出去、向下长出来 ——
+    /// 视觉上就是"从那条线长出来的"。
+    /// </summary>
     public void ShowExpanded()
     {
         _expanded = true;
@@ -468,7 +547,7 @@ internal sealed class StripPanelWindow : Window
 
         int wPx = Geometry.DipToPx(Geometry.PanelWidthDip, _scale);
         int hPx = Geometry.DipToPx(Geometry.PanelHeightDip, _scale);
-        int xPx = _anchorRightPx - wPx;
+        int xPx = Geometry.ExpandedLeftPx(_anchorCenterXPx, _scale);
         int yPx = _anchorTopPx;
 
         ClearClip();
@@ -476,6 +555,7 @@ internal sealed class StripPanelWindow : Window
         // ★ 先把穿透关掉再显示 —— 反过来的话第一下点击会漏给下面的窗口
         SetClickThrough(false);
 
+        _strip.Visibility = Visibility.Collapsed;   // 展开态不要那条白线压在面板顶上
         _panel.Visibility = Visibility.Visible;
         _panel.Opacity = 1;
 
@@ -562,46 +642,63 @@ internal sealed class StripPanelWindow : Window
         }
     }
 
+    /// <summary>
+    /// 一行历史条目。
+    ///
+    /// ★ 第一轮是两行（预览最多两行 + 时间独占一行），行高约 65 DIP。
+    ///   面板变矮之后（149 DIP）那样只放得下 1.7 行，根本没法用。
+    ///   改成**单行紧凑**：预览一行 + 时间同排靠右，行高约 26 DIP → 一屏约 4 行。
+    ///
+    /// 顺带解决了滚轮那个问题：行矮了之后一步 24 DIP 的位移占比明显，
+    /// 一眼就能看出滚了没有。
+    /// </summary>
     private Border MakeRow(int ordinal, ClipboardHistory.Entry entry)
     {
         string preview = entry.Text.Replace("\r", " ").Replace("\n", " ");
-        if (preview.Length > 80) preview = preview[..80] + "…";
+        if (preview.Length > 60) preview = preview[..60] + "…";
 
-        var stack = new StackPanel();
+        // 单行：左边预览占满剩余宽度，右边时间固定宽度。
+        // 两列都用 GridLength 明确分配 —— 宽度不靠内容去撑（第一轮的教训）。
+        var line = new Grid();
+        line.ColumnDefinitions.Add(new ColumnDefinition());
+        line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        stack.Children.Add(new TextBlock
+        var text = new TextBlock
         {
             Text = preview,
             Foreground = Brushes.White,
             FontFamily = new FontFamily("Microsoft YaHei UI"),
             FontSize = 12,
-            LineHeight = 16,
-            TextWrapping = TextWrapping.Wrap,
-            MaxHeight = 34,          // 最多两行，再长就截断
+            TextWrapping = TextWrapping.NoWrap,
             TextTrimming = TextTrimming.CharacterEllipsis,
-        });
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        line.Children.Add(text);
 
-        stack.Children.Add(new TextBlock
+        var time = new TextBlock
         {
             Text = $"{ordinal}.  {entry.At:HH:mm:ss}",
-            Foreground = new SolidColorBrush(Color.FromRgb(0x8A, 0x8A, 0x8A)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x9A, 0x9A, 0x9A)),
             FontFamily = new FontFamily("Microsoft YaHei UI"),
             FontSize = 10,
-            Margin = new Thickness(0, 3, 0, 0),
-        });
+            Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(time, 1);
+        line.Children.Add(time);
 
         var row = new Border
         {
             Background = new SolidColorBrush(RowBg),
             BorderBrush = new SolidColorBrush(RowBorder),
             BorderThickness = new Thickness(0, 0, 0, 1),
-            Padding = new Thickness(8, 6, 8, 6),
-            Margin = new Thickness(0, 0, 0, 3),
+            Padding = new Thickness(8, 5, 8, 5),
+            Margin = new Thickness(0, 0, 0, 2),
             Cursor = Cursors.Hand,
             ClipToBounds = true,
-            Child = stack,
+            Child = line,
             Tag = entry.Text,
-            ToolTip = preview,
+            ToolTip = entry.Text,
         };
 
         row.MouseEnter += (_, _) => row.Background = new SolidColorBrush(RowHover);
