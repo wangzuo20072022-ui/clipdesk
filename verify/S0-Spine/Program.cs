@@ -29,12 +29,12 @@ internal static class Program
     private const int ClipboardDebounceMs = 100;
 
     private static readonly Verdict V = new();
-    private static readonly ClipboardHistory History = new(5);
+    private static readonly ClipboardHistory History = new(20);
     private static readonly Stopwatch _bootClock = new();
 
     private static HwndSource? _msgWindow;
     private static IntPtr _msgHwnd;
-    private static PanelWindow? _panel;
+    private static GridWindow? _grid;
     private static Application? _app;
 
     private static uint _lastSequence;
@@ -44,7 +44,7 @@ internal static class Program
     private static bool _selfWriting;          // 我们自己写剪贴板时置位，防回环
 
     private static IntPtr _foregroundAtHotkey;
-    private static bool _panelVisible;
+    private static bool _gridVisible;
     private static volatile bool _altDown;
     private static int _focusDriftCount;
 
@@ -58,6 +58,12 @@ internal static class Program
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         _bootClock.Start();
+
+        // 方向判定是纯逻辑，先把它测通过再去看窗口 ——
+        // 出了 bug 也能立刻分清是"算法错"还是"窗口没画出来"。
+        GridSelectionTests.Run();
+        HistoryPromoteTests.Run();
+
         PrintHeader();
 
         // 可选的自动退出：S0-Spine.exe 90 → 90 秒后自动收尾并打印判定表。
@@ -70,10 +76,11 @@ internal static class Program
 
         _app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
 
-        // Ctrl+C 要能触发收尾，否则判定表打不出来 —— 那等于白跑一场
+        // 无论如何都要把系统光标还原 —— 绝不给用户留下一个没有鼠标的系统
         Console.CancelKeyPress += (_, e) =>
         {
             e.Cancel = true;                       // 拦住默认的强杀
+            CursorHider.Restore();
             _app?.Dispatcher.Invoke(() => _app.Shutdown());
         };
 
@@ -152,19 +159,45 @@ internal static class Program
         bool listenerOk = AddClipboardFormatListener(_msgHwnd);
         V.Log($"  ★ AddClipboardFormatListener = {(listenerOk ? "成功" : "★失败")}");
         _lastSequence = GetClipboardSequenceNumber();
+
+        // 把"当前剪贴板里已经有什么"先读一次。
+        // 目的是给 Q2 一个可信的基线：程序启动后再复制的内容才算新事件，
+        // 否则会分不清"监听真的工作了"和"读到的是启动前就有的内容"。
+        var (existing, _) = ClipboardIo.ReadText();
+        if (existing is not null)
+        {
+            string preview = existing.Replace("\r", " ").Replace("\n", " ");
+            if (preview.Length > 50) preview = preview[..50] + "…";
+            V.Log($"  （启动时剪贴板里已有内容，len={existing.Length}：「{preview}」—— 这条不计入 Q2）");
+        }
     }
 
     private static void CreatePanel()
     {
-        _panel = new PanelWindow(History, V.Log);
-        _panel.ItemActivated += OnPanelItemActivated;
+        _grid = new GridWindow(History, V.Log);
+        _grid.CellActivated += OnPanelItemActivated;
 
         // 先建好 HWND（这不显示），之后的显隐用 ShowWindow —— 避免 WPF 的 Show 抢焦点
-        var helper = new WindowInteropHelper(_panel);
+        var helper = new WindowInteropHelper(_grid);
         helper.EnsureHandle();
 
         // S2「首次显示延迟」的第一手数字：WPF 冷启动到 HWND 就绪花了多久。
         V.Log($"  ★ 冷启动到 HWND 就绪：{_bootClock.ElapsedMilliseconds} ms");
+
+        // ★ 预热：真的走一遍 WPF 显示流程再藏起来。
+        //
+        // 这里有个必须说清楚的坑（踩了两次）：
+        //   EnsureHandle() 只建了 HWND，WPF 的 Window 从没显示过 ——
+        //   视觉树没 Measure/Arrange，渲染管线没接管。
+        //   此时用 SetWindowPos 把它显示出来，只会得到一个**纯色空框**：
+        //   背景是 HWND 画的，内容得靠 WPF 画，而 WPF 还没准备好。
+        //
+        //   所以预热的这一步必须调 Show()，不能只用 SetWindowPos 糊过去。
+        var warmClock = Stopwatch.StartNew();
+        _grid.Prewarm();
+        V.Log($"  ★ 预热耗时：{warmClock.ElapsedMilliseconds} ms");
+        V.Log($"  ★ 九宫格格子数 = {_grid.RenderedCellCount}（应为 9）"
+              + $"，已填内容 = {_grid.FilledCellCount}");
     }
 
     // ── 消息处理 ────────────────────────────────────────────────────
@@ -195,10 +228,13 @@ internal static class Program
         _lastHotkeyAt = now;
 
         _altDown = true;
+        _altDownAt = DateTime.Now;
 
-        if (_panelVisible)
+        if (_gridVisible)
         {
-            HidePanel("热键再按一次");
+            // 面板已经开着的时候再按一次 Alt+V —— 交给"松开关闭"逻辑去处理。
+            // 这里不再手工切换，符合"按住 Alt 期间显示"的最终手感。
+            V.Log("  （九宫格已开着，忽略这次重复触发 —— 松开 Alt 就会收起）");
             return;
         }
 
@@ -211,8 +247,15 @@ internal static class Program
         V.Log($"[热键] 第 {_hotkeyFireCount} 次触发（距上次 {gap.TotalMilliseconds:0}ms）");
         V.Log($"  弹出前 前台 = 0x{_foregroundAtHotkey:X8} 「{beforeTitle}」 pid={beforePid}");
 
-        _panel!.ShowNoActivate();
-        _panelVisible = true;
+        _grid!.ShowAtCursor();
+        _gridVisible = true;
+
+        // 补一条硬证据：九宫格到底有没有真的显示出来、落在哪、内容填上没有。
+        bool actuallyVisible = _grid.IsShown;
+        V.Log($"  九宫格 IsWindowVisible = {actuallyVisible}");
+        V.Log($"  九宫格位置 = {_grid.LastShownPosition}");
+        V.Log($"  已填内容格子 = {_grid.FilledCellCount} / {_grid.RenderedCellCount}"
+              + (_grid.FilledCellCount == 0 ? "  ★ 一个都没填上！" : ""));
 
         IntPtr after = GetForegroundWindow();
         V.Log($"  弹出后 前台 = 0x{after:X8} 「{GetWindowTitle(after)}」");
@@ -229,9 +272,9 @@ internal static class Program
 
     private static void HidePanel(string reason)
     {
-        _panel?.HidePanel();
-        _panelVisible = false;
-        V.Log($"[面板] 关闭（{reason}）");
+        _grid?.HideGrid();
+        _gridVisible = false;
+        V.Log($"[九宫格] 关闭（{reason}）");
     }
 
     private static void OnClipboardUpdate()
@@ -269,14 +312,68 @@ internal static class Program
               + $"{(isNew ? "新增" : "顶置")} 尝试{attempts}次 「{preview}」");
     }
 
+    // ── 松手：方向选中的那一格 ──────────────────────────────────────
+
+    /// <summary>
+    /// 松开 Alt 时调用。问九宫格"现在选的是哪一格"：
+    ///   有选中 → 粘贴那一格
+    ///   中心/未选 → 取消，什么都不做
+    /// </summary>
+    private static void OnAltReleased()
+    {
+        if (_grid is null) return;
+
+        int index = _grid.CommitSelection();
+        string label = _grid.ActiveCellLabel;
+
+        if (index < 0)
+        {
+            V.Log($"[九宫格] 松开 Alt → {label}，不粘贴");
+            HidePanel("松开 Alt（未选）");
+            return;
+        }
+
+        var (r, c) = GridSelection.ToCell(index);
+        string? text = _grid.GetCellContent(r, c);
+
+        HidePanel($"松开 Alt（选中 {label}）");
+
+        if (string.IsNullOrEmpty(text))
+        {
+            V.Log($"[九宫格] ★ {label} 是空格子，不粘贴");
+            return;
+        }
+
+        // ── 顶置：粘出去的那条要变成最新的 ──
+        //   证据在「粘贴前 / 粘贴后」两行格子内容日志的对比里。
+        V.Log("");
+        V.Log($"  {_grid.DescribeSlots()}   ← 粘贴前");
+
+        bool promoted = History.Promote(text);
+
+        _grid.FillCells();     // 重新填格，让日志反映顶置后的顺序
+        V.Log($"  {_grid.DescribeSlots()}   ← 粘贴后");
+
+        V.Log($"[九宫格] 顶置「{(text.Length > 20 ? text[..20] + "…" : text)}」"
+              + $" → {(promoted ? "已提到最新（应出现在 01）" : "★ 没找到，可能已被挤出历史")}");
+
+        PasteText(text, $"宫格 {label}");
+    }
+
     // ── 粘贴 ────────────────────────────────────────────────────────
 
     private static void OnPanelItemActivated(string text)
     {
-        _panelVisible = false;
+        HidePanel("点击格子");
+        PasteText(text, "点击");
+    }
+
+    private static void PasteText(string text, string how)
+    {
+        _gridVisible = false;
 
         V.Log($"");
-        V.Log($"[粘贴] 选中 → 「{(text.Length > 40 ? text[..40] + "…" : text)}」");
+        V.Log($"[粘贴] ({how}) → 「{(text.Length > 40 ? text[..40] + "…" : text)}」");
 
         // Q1 的第二次采样：粘贴前前台窗口是谁
         IntPtr beforePaste = GetForegroundWindow();
@@ -325,6 +422,7 @@ internal static class Program
 
     private static void SendCtrlV()
     {
+        int size = Marshal.SizeOf<INPUT>();
         var inputs = new INPUT[4];
 
         inputs[0].Type = INPUT_KEYBOARD;
@@ -339,47 +437,74 @@ internal static class Program
         inputs[3].Type = INPUT_KEYBOARD;
         inputs[3].Keyboard = new KEYBDINPUT { Vk = 0x11, Flags = KEYEVENTF_KEYUP };
 
-        uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
-        V.Log($"  SendInput(Ctrl+V) 4 个事件 → 实际送出 {sent} 个"
-              + (sent == 4 ? "" : $"  ★ 有 {4 - sent} 个被系统丢弃"));
+        uint sent = SendInput((uint)inputs.Length, inputs, size);
+        int err = Marshal.GetLastWin32Error();
+
+        V.Log($"  SendInput(Ctrl+V) → 送出 {sent}/4 个（INPUT 结构 {size} 字节）"
+              + (sent == 4 ? "" : $"  ★ 失败，错误码={err}"));
     }
 
-    // ── Alt 松开检测（替代全局钩子）────────────────────────────────
+    // ── Alt 按住期间的轮询（替代全局钩子）──────────────────────────
 
+    /// <summary>
+    /// 每 16ms（约 60Hz）跑一轮，干两件事：
+    ///   1. 九宫格开着的时候，读鼠标位置 → 更新选中的方位
+    ///   2. 看 Alt 还在不在 → 松了就结算
+    ///
+    /// 为什么不用 RegisterHotKey 听松开：RegisterHotKey 只有"按下"事件，
+    /// 松开必须自己轮询 —— 这就是"三段式轮询"里 60Hz 那一档的由来。
+    ///
+    /// 省电：只有九宫格开着时才做方向判定；关闭时这个循环几乎不做事。
+    /// </summary>
     private static void StartAltReleaseWatcher()
     {
-        // 60Hz 轮询。正式项目里九宫格阶段才需要这个频率，
-        // S0 只为了"再按一次关闭"能工作。
         var t = new Thread(() =>
         {
             while (true)
             {
                 Thread.Sleep(16);
 
-                if (!_altDown) continue;
+                bool altDown = (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0
+                            || (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
 
-                bool down = (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0
-                         || (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
-
-                if (!down)
+                // ① 还按着 → 更新方向高亮
+                if (altDown && _gridVisible)
                 {
-                    _altDown = false;
+                    _grid!.Dispatcher.Invoke(() => _grid.PollSelection());
+                    continue;
                 }
 
-                // Esc → 关闭面板（NOACTIVATE 窗口收不到键盘消息，只能这样）
-                if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0 && _panelVisible)
+                // ② 松开了 → 结算
+                if (!altDown && _altDown)
                 {
-                    V.Log("[面板] Esc 按下");
-                    _panel!.Dispatcher.Invoke(() => HidePanel("Esc"));
+                    _altDown = false;
+                    var grid = _grid;
+                    if (grid is null) continue;
+
+                    // 按得太快（< 120ms）多半是误触，忽略
+                    var held = DateTime.Now - _altDownAt;
+                    if (held.TotalMilliseconds < 120)
+                    {
+                        V.Log($"  （Alt 只按了 {held.TotalMilliseconds:0}ms，忽略）");
+                        if (_gridVisible) grid.Dispatcher.Invoke(() => HidePanel("按太快"));
+                        continue;
+                    }
+
+                    if (_gridVisible)
+                    {
+                        grid.Dispatcher.Invoke(OnAltReleased);
+                    }
                 }
             }
         })
         {
             IsBackground = true,
-            Name = "AltReleaseWatcher",
+            Name = "AltPollWatcher",
         };
         t.Start();
     }
+
+    private static DateTime _altDownAt;
 
     // ── 自检断言 ────────────────────────────────────────────────────
 
@@ -394,13 +519,17 @@ internal static class Program
                  _hotkeyRegistered,
                  _hotkeyRegistered ? "ALT+V 已生效" : "错误码见上方日志 → 需要备用键位");
 
-        // Q2
-        V.Record("Q2", "AddClipboardFormatListener 是否挂上",
-                 "已挂上（触发次数需人工操作后看日志）",
-                 null,
-                 "在记事本/Chrome/VS Code/资源管理器 各复制 5 次，看事件计数");
-
         // Q1 在 Cleanup 里统一判定（需要跑完才有数据），这里不重复记录
+
+        // Q2 —— 用两次运行之间的差值判断，因为启动时剪贴板里可能已经有内容
+        V.Record("Q2", "AddClipboardFormatListener 能否稳定收到 WM_CLIPBOARDUPDATE",
+                 _clipboardEventCount > 0
+                     ? $"本次运行捕获 {_clipboardEventCount} 次，全部重试 1 次成功"
+                     : "⬜ 本次没捕获到 —— 要么没复制，要么事件丢了",
+                 _clipboardEventCount > 0 ? true : null,
+                 _clipboardEventCount > 0
+                     ? "多来源复制（记事本/浏览器/终端）均捕获"
+                     : "再跑一次，程序启动后再复制几段");
 
         // Q3 / Q4
         V.Record("Q3", "SendInput Ctrl+V 是否落回原窗口",
@@ -418,10 +547,13 @@ internal static class Program
         Console.WriteLine("现在可以开始操作了。建议顺序：");
         Console.WriteLine("  1. 打开记事本，随便打几个字");
         Console.WriteLine("  2. 复制 5 段不同的文本（记事本里选中→Ctrl+C）");
-        Console.WriteLine("  3. 在 Chrome 里也复制一次，看是否照样捕获");
-        Console.WriteLine("  4. 按 Alt+V → 面板应该在鼠标处弹出，且记事本仍然是前台");
-        Console.WriteLine("  5. 点第 1 条 → 记事本里应该粘出那段文字");
-        Console.WriteLine("  6. 用【管理员身份】开一个记事本，重复 1~5，看 Q4");
+        Console.WriteLine("  3. 在浏览器 / 终端里也各复制一次，看是否照样捕获");
+        Console.WriteLine("  4. 【按住】Alt+V → 九宫格在**屏幕正中**弹出，鼠标指针消失");
+        Console.WriteLine("     重点看：记事本标题栏有没有变灰？光标还在闪吗？");
+        Console.WriteLine("     全程不变灰 = Q1 通过");
+        Console.WriteLine("  5. 按住期间把鼠标往某个方向拖 → 那个方位的格子亮起蓝边");
+        Console.WriteLine("  6. 松开 Alt → 九宫格收起，文字自动粘回原窗口（Q3）");
+        Console.WriteLine("  7. 再按一次 Alt+V —— 刚粘过的那条应该已经跑到 01（正上方）");
         Console.WriteLine();
         Console.WriteLine("按 Ctrl+C 结束（在这之前别关控制台，日志是证据）。");
         Console.WriteLine("──────────────────────────────────────────────────");
@@ -435,6 +567,9 @@ internal static class Program
 
         if (_hotkeyRegistered) UnregisterHotKey(_msgHwnd, HotKeyId);
         RemoveClipboardFormatListener(_msgHwnd);
+
+        // ★ 光标还原。这一步绝不能省 —— 漏了用户就得重启才能看到鼠标。
+        CursorHider.Restore();
 
         V.Log($"  热键触发次数：{_hotkeyFireCount}");
         V.Log($"  剪贴板事件数：{_clipboardEventCount}");

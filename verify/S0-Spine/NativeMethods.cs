@@ -38,7 +38,10 @@ internal static class NativeMethods
 
     // ── DwmSetWindowAttribute 属性号 ────────────────────────────────
     internal const int DWMWA_CLOAK = 13;
+    internal const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
     internal const int DWMWA_BORDER_COLOR = 34;
+    internal const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+    internal const int DWMWCP_ROUND = 2;
     internal const uint DWMWA_COLOR_NONE = 0xFFFFFFFE;
 
     // ── SendInput ───────────────────────────────────────────────────
@@ -70,6 +73,18 @@ internal static class NativeMethods
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    internal struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
+    internal const uint MONITOR_DEFAULTTONEAREST = 2;
+    internal const uint MONITOR_DEFAULTTOPRIMARY = 1;
+
+    [StructLayout(LayoutKind.Sequential)]
     internal struct KEYBDINPUT
     {
         public ushort Vk;
@@ -79,16 +94,69 @@ internal static class NativeMethods
         public IntPtr ExtraInfo;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MOUSEINPUT
+    {
+        public int Dx;
+        public int Dy;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
+    /// <summary>
+    /// INPUT 是个联合体，**体积由最大的成员决定**。
+    ///
+    /// ★ 这里是 SendInput 一直返回 0 的根因：
+    ///   如果联合体里只声明 KEYBDINPUT，x64 下 Marshal.SizeOf 算出 32，
+    ///   但系统的 INPUT 实际是 40（MOUSEINPUT 更大）。
+    ///   SendInput 校验 cbSize 不符 → 直接返回 0，一个事件都不送。
+    ///
+    ///   把 MOUSEINPUT 也放进来，尺寸自然就对了。
+    /// </summary>
     [StructLayout(LayoutKind.Explicit)]
     internal struct INPUT
     {
         [FieldOffset(0)] public uint Type;
         [FieldOffset(8)] public KEYBDINPUT Keyboard;
+        [FieldOffset(8)] public MOUSEINPUT Mouse;
     }
 
     // ── user32 ─────────────────────────────────────────────────────
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool SetWindowPos(
+        IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+
+    internal const uint SWP_NOACTIVATE = 0x0010;
+    internal const uint SWP_NOZORDER = 0x0004;
+    internal const uint SWP_NOSIZE = 0x0001;
+    internal const uint SWP_SHOWWINDOW = 0x0040;
+    internal static readonly IntPtr HWND_TOPMOST = new(-1);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr MonitorFromWindow(IntPtr hWnd, uint flags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr MonitorFromPoint(POINT point, uint flags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFO info);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern uint GetDpiForWindow(IntPtr hWnd);
+
+    /// <summary>
+    /// 拿某个显示器的 DPI。Shcore.dll 的 GetDpiForMonitor。
+    /// 用它而不是 GetDpiForWindow —— 窗口还没显示时，我们不知道它最终落在哪个屏上。
+    /// </summary>
+    [DllImport("shcore.dll")]
+    internal static extern int GetDpiForMonitor(IntPtr monitor, int dpiType, out uint dpiX, out uint dpiY);
+
+    internal const int MDT_EFFECTIVE_DPI = 0;
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool SetForegroundWindow(IntPtr hWnd);
@@ -155,6 +223,27 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint SendInput(uint count, INPUT[] inputs, int size);
+
+    /// <summary>
+    /// 整批设置鼠标光标。这是"光标是每个窗口自己的"这个事实的正解。
+    ///
+    /// 为什么 SetCursor 不行：
+    ///   光标归属于**某个窗口**，只有当那个窗口是前台/覆盖时系统才用它。
+    ///   我们的九宫格是 WS_EX_NOACTIVATE —— 永远不是前台窗口，
+    ///   所以 SetCursor 设了也白设，用户看到的一直是原窗口的光标。
+    ///
+    /// SetSystemCursor 直接替换**系统级**光标资源，绕开那套归属逻辑。
+    /// ⚠️ 它会真的改掉系统光标，所以退出前必须调 SystemParametersInfo(SPI_SETCURSORS)
+    ///    把系统光标还原 —— 否则用户重启前都看不到鼠标指针。
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool SetSystemCursor(IntPtr hcur, uint id);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool SystemParametersInfo(uint uiAction, uint uiParam, IntPtr pvParam, uint fWinIni);
+
+    internal const uint OCR_NORMAL = 32512;
+    internal const uint SPI_SETCURSORS = 0x0057;
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr GetOpenClipboardWindow();
