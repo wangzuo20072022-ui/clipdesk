@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -26,6 +27,7 @@ namespace S0Spine;
 internal static class Program
 {
     private const int HotKeyId = 0x0C1D;
+    private const int ExitHotKeyId = 0x0C1E;
     private const int ClipboardDebounceMs = 100;
 
     private static readonly Verdict V = new();
@@ -58,6 +60,22 @@ internal static class Program
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         _bootClock.Start();
+
+        // ★ 第一件事：看一眼有没有上次遗留的自己。
+        //
+        //   为什么需要这个：这个 Exe 的扩展样式是 TOOLWINDOW + NOACTIVATE，
+        //   Windows 不给它画标题栏和关闭按钮（tasklist 里显示 "Hidden Window"）。
+        //   一旦它卡住没退干净，用户就**没有正常手段关掉它** —— 而它还锁着 exe，
+        //   下一次编译直接 MSB3021 失败。
+        //
+        //   这里**只检测、只报告，绝不自动结束任何进程**。
+        //   一个进程可能是用户正在用的，程序自作主张杀掉它是不可接受的，
+        //   哪怕它叫同一个名字。怎么处理由用户决定 ——
+        //   正常手段是下面那个逃生热键。
+        WarnIfPreviousInstanceRunning();
+
+        // ★ 随时可按 Ctrl+Alt+Q 退出 —— 见 RegisterExitHotKey()。
+        //   这是"TOOLWINDOW 窗口没法用正常方式关闭"这个问题的正解。
 
         // 方向判定是纯逻辑，先把它测通过再去看窗口 ——
         // 出了 bug 也能立刻分清是"算法错"还是"窗口没画出来"。
@@ -96,6 +114,36 @@ internal static class Program
         _app.Run();
 
         Cleanup();
+    }
+
+    /// <summary>
+    /// 报告一下同名的旧进程还在不在。**只报告，不结束任何东西。**
+    ///
+    /// 一个进程可能是用户**正在用**的，程序悄悄杀掉它是不可接受的 ——
+    /// 哪怕那个进程叫同一个名字。所以这里一行 Kill 都没有。
+    ///
+    /// 真要停掉旧实例，正常手段是逃生热键 Ctrl+Alt+Q（见 CreateMessageWindow），
+    /// 或者在任务管理器里结束它。
+    /// </summary>
+    private static void WarnIfPreviousInstanceRunning()
+    {
+        int me = Environment.ProcessId;
+        var others = new List<int>();
+
+        foreach (var p in Process.GetProcessesByName("S0Spine"))
+        {
+            if (p.Id != me) others.Add(p.Id);
+            p.Dispose();
+        }
+
+        if (others.Count == 0) return;
+
+        Console.WriteLine($"⚠️  检测到 {others.Count} 个上次遗留的探针进程"
+                          + $"（PID {string.Join(", ", others)}）。");
+        Console.WriteLine("   它可能锁着 exe，导致编译报 MSB3021。");
+        Console.WriteLine("   停止它的办法：在那个窗口上按逃生热键 Ctrl+Alt+Q，");
+        Console.WriteLine("   或在任务管理器里结束 S0Spine.exe。");
+        Console.WriteLine();
     }
 
     private static int _autoExitSeconds;
@@ -160,6 +208,14 @@ internal static class Program
         V.Log($"  ★ AddClipboardFormatListener = {(listenerOk ? "成功" : "★失败")}");
         _lastSequence = GetClipboardSequenceNumber();
 
+        // ── 逃生热键 ──
+        // 这个 Exe 是 TOOLWINDOW + NOACTIVATE，Windows **不画标题栏和关闭按钮**，
+        // 一旦九宫格卡住或光标藏了没还原，用户没有任何正常手段停下来。
+        // 所以给一个全局热键当逃生门 —— 不管焦点在哪、窗口什么状态，按下就退。
+        bool exitHotkey = RegisterHotKey(_msgHwnd, ExitHotKeyId,
+                                         MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_Q);
+        V.Log($"  ★ 逃生热键 Ctrl+Alt+Q = {(exitHotkey ? "已注册" : "★注册失败（仍可用 Ctrl+C）")}");
+
         // 把"当前剪贴板里已经有什么"先读一次。
         // 目的是给 Q2 一个可信的基线：程序启动后再复制的内容才算新事件，
         // 否则会分不清"监听真的工作了"和"读到的是启动前就有的内容"。
@@ -208,6 +264,13 @@ internal static class Program
         {
             case WM_HOTKEY when wParam.ToInt32() == HotKeyId:
                 OnHotKey();
+                handled = true;
+                break;
+
+            case WM_HOTKEY when wParam.ToInt32() == ExitHotKeyId:
+                V.Log("[逃生热键] Ctrl+Alt+Q → 收尾退出");
+                CursorHider.Restore();       // 先把光标还回去，再退
+                _app?.Shutdown();
                 handled = true;
                 break;
 
@@ -556,6 +619,7 @@ internal static class Program
         Console.WriteLine("  7. 再按一次 Alt+V —— 刚粘过的那条应该已经跑到 01（正上方）");
         Console.WriteLine();
         Console.WriteLine("按 Ctrl+C 结束（在这之前别关控制台，日志是证据）。");
+        Console.WriteLine("若 Ctrl+C 没反应，按 Ctrl+Alt+Q —— 全局逃生热键，不管焦点在哪都有效。");
         Console.WriteLine("──────────────────────────────────────────────────");
         Console.WriteLine();
     }
@@ -566,6 +630,7 @@ internal static class Program
         Console.WriteLine("── 收尾 ──────────────────────────────────────────");
 
         if (_hotkeyRegistered) UnregisterHotKey(_msgHwnd, HotKeyId);
+        UnregisterHotKey(_msgHwnd, ExitHotKeyId);
         RemoveClipboardFormatListener(_msgHwnd);
 
         // ★ 光标还原。这一步绝不能省 —— 漏了用户就得重启才能看到鼠标。

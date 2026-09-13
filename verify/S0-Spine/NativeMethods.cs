@@ -30,6 +30,8 @@ internal static class NativeMethods
     internal const uint MOD_SHIFT = 0x0004;
     internal const uint MOD_NOREPEAT = 0x4000;
     internal const uint VK_V = 0x56;
+    /// <summary>逃生热键用：Ctrl+Alt+Q</summary>
+    internal const uint VK_Q = 0x51;
 
     // ── 窗口消息 ────────────────────────────────────────────────────
     internal const int WM_HOTKEY = 0x0312;
