@@ -353,12 +353,20 @@ internal sealed class StripPanelWindow : Window
     /// <summary>
     /// 把窗口裁成只显示条子那一块。
     ///
-    /// 为什么需要：窗口最小高度有地板（约 38px），1mm 只有 5.67px，
-    /// 窗口会被顶大。多出来的部分是深色的，会露出一大块 —— 必须裁掉。
+    /// ★ 实测结论：**这里其实用不上，留着当保险。**
     ///
-    /// 用 SetWindowRgn（1-bit 遮罩）是**这里唯一可行的办法**：
-    /// AllowsTransparency 会给窗口加 WS_EX_LAYERED，那是 CLAUDE.md 明令禁止的。
-    /// 1-bit 遮罩的锯齿问题在这里无所谓 —— 1mm 高的条子根本看不出圆角。
+    ///   我原本担心 WPF/Windows 的窗口最小尺寸地板（约 38px）会把 1mm 的窗口顶大，
+    ///   所以准备用 SetWindowRgn 把多出来的部分裁掉。
+    ///   但第一次实跑打印出来是：
+    ///
+    ///       条子已摆出：物理 (2491,15) 57×6px
+    ///
+    ///   —— **6px，一点没被顶大**。SetWindowPos 带 SWP_NOACTIVATE 时
+    ///   并不受 WM_GETMINMAXINFO 的 min track size 约束。
+    ///
+    ///   所以窗口本身就是那条细线，没有多余面积要裁。
+    ///   这个函数保留着，是因为一旦将来窗口被迫变大（改样式、换 DPI），
+    ///   ApplyBounds 里的地板检测会打日志，那时它就是现成的解法。
     /// </summary>
     private void ClipToStrip(int widthPx, int heightPx)
     {
@@ -377,7 +385,7 @@ internal sealed class StripPanelWindow : Window
         }
     }
 
-    /// <summary>取消裁剪，恢复整窗可见（展开态用）</summary>
+    /// <summary>取消裁剪，恢复整窗可见</summary>
     private void ClearClip()
     {
         SetWindowRgn(_hwnd, IntPtr.Zero, true);

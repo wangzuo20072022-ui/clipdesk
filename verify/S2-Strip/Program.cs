@@ -206,6 +206,13 @@ internal static class Program
         var warmClock = Stopwatch.StartNew();
         _panel.Prewarm();
         V.Log($"  ★ 预热耗时：{warmClock.ElapsedMilliseconds} ms");
+
+        // ★ 预热之后必须**真的摆出来**。
+        //   Prewarm() 结尾是 SW_HIDE，所以那之后条子是藏着的 ——
+        //   不补这一下，启动后右上角什么都没有（第一次差点就这么交出去了）。
+        //   条子是常驻可见的东西，程序一起来就该在那儿。
+        _panel.ShowCollapsed();
+        V.Log($"  ★ 条子已摆出：物理 {_panel.BoundsText}");
     }
 
     // ── 消息处理 ────────────────────────────────────────────────────
