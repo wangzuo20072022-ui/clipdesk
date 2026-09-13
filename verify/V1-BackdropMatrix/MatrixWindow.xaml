@@ -1,0 +1,65 @@
+<Window x:Class="V1BackdropMatrix.MatrixWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="V1 · 材质 × 窗口样式矩阵"
+        Width="1700" Height="1067"
+        Background="#FF101014"
+        Foreground="White"
+        WindowStartupLocation="Manual"
+        Topmost="False">
+    <Window.Resources>
+        <!--
+          验证背景：一排高对比度彩色条纹 + 细黑线。
+          故意画得"锐利" —— 探针窗口叠在它上面时：
+            · 能看清条纹边界  → 材质没生效（或压根没模糊）
+            · 条纹糊成一团    → 材质生效了
+          不依赖用户桌面壁纸，所以结论可复现。
+        -->
+        <DrawingBrush x:Key="Stripes" TileMode="Tile"
+                      Viewport="0,0,40,1067" ViewportUnits="Absolute">
+            <DrawingBrush.Drawing>
+                <DrawingGroup>
+                    <GeometryDrawing Brush="#FFE8503A">
+                        <GeometryDrawing.Geometry>
+                            <RectangleGeometry Rect="0,0,10,1067" />
+                        </GeometryDrawing.Geometry>
+                    </GeometryDrawing>
+                    <GeometryDrawing Brush="#FF2E9BE8">
+                        <GeometryDrawing.Geometry>
+                            <RectangleGeometry Rect="10,0,10,1067" />
+                        </GeometryDrawing.Geometry>
+                    </GeometryDrawing>
+                    <GeometryDrawing Brush="#FFF2C53D">
+                        <GeometryDrawing.Geometry>
+                            <RectangleGeometry Rect="20,0,10,1067" />
+                        </GeometryDrawing.Geometry>
+                    </GeometryDrawing>
+                    <GeometryDrawing Brush="#FF38C172">
+                        <GeometryDrawing.Geometry>
+                            <RectangleGeometry Rect="30,0,10,1067" />
+                        </GeometryDrawing.Geometry>
+                    </GeometryDrawing>
+                    <GeometryDrawing Brush="#FF000000">
+                        <GeometryDrawing.Geometry>
+                            <RectangleGeometry Rect="0,0,40,1" />
+                        </GeometryDrawing.Geometry>
+                    </GeometryDrawing>
+                </DrawingGroup>
+            </DrawingBrush.Drawing>
+        </DrawingBrush>
+    </Window.Resources>
+
+    <Grid>
+        <!-- 底层：彩色条纹 -->
+        <Rectangle Fill="{StaticResource Stripes}" />
+
+        <!-- 条纹之上压一层大号文字，模糊后应当完全不可读 -->
+        <TextBlock Text="ABCDEFG 1234567890 清晰度测试 / SHARPNESS TEST / 01100110"
+                   Foreground="#FFFFFFFF" FontSize="52" FontWeight="Bold"
+                   VerticalAlignment="Top" HorizontalAlignment="Left"
+                   Margin="20,10,0,0" />
+
+        <!-- 最上层：卡片区（不透明，覆盖左侧） -->
+        <Grid x:Name="Root" />
+    </Grid>
+</Window>

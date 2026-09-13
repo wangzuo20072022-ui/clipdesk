@@ -1,0 +1,57 @@
+# ---- .NET 构建产物 ----
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# 发布产物
+publish/
+*.publishsettings
+artifacts/
+
+# ---- MSIX / 打包 ----
+*.appx
+*.appxbundle
+*.msix
+*.msixbundle
+AppPackages/
+BundleArtifacts/
+*.pfx
+*.cer
+*.p12
+
+# ---- VS Code ----
+.vs/
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# ---- JetBrains Rider ----
+.idea/
+
+# ---- NuGet ----
+*.nupkg
+packages/
+!packages/build/
+
+# ---- 临时截图与验证产出（各人机器不同，不入库） ----
+docs/shots/
+verify/**/out/
+*.tmp
+
+# ---- 参考项目（第三方代码，只读引用，不入库） ----
+# Rememory / Shapeshifter 都是下载下来读的，不进我们的历史。
+# 需要时按 docs\技术验证报告.md 里记的来源重新下载即可。
+reference/_probe/*/
+reference/_probe/*.zip
+
+# ---- 系统 ----
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
