@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Exe 而非 WinExe：控制台要打印每一步的实测结果。
+         这次的产出是【一份判定表】，控制台输出就是证据本身。 -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+
+    <RootNamespace>S2Strip</RootNamespace>
+    <AssemblyName>S2Strip</AssemblyName>
+
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+
+    <!-- 验证程序，不做发布优化 -->
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+</Project>
