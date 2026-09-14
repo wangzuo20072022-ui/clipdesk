@@ -103,6 +103,12 @@ internal static class Program
 
         PrintHeader();
 
+        // ★ 构建时间戳 —— 一眼看出"我正在测的是哪一次编译"。
+        //   这个坑也踩过：后台起了一堆版本，分不清哪个是哪个。
+        Console.WriteLine($"[构建] 这份 exe 编译于 "
+                          + $"{System.IO.File.GetLastWriteTime(Environment.ProcessPath!):yyyy-MM-dd HH:mm:ss}");
+        Console.WriteLine($"[构建] 路径 = {Environment.ProcessPath}");
+
         if (args.Length > 0 && int.TryParse(args[0], out int seconds) && seconds > 0)
         {
             _autoExitSeconds = seconds;
@@ -220,6 +226,28 @@ internal static class Program
         _altHotkeyRegistered = RegisterHotKey(_msgHwnd, AltHotKeyId,
                                               MOD_ALT | MOD_NOREPEAT, VK_V);
         V.Log($"  ★ 九宫格热键 Alt+V = {(_altHotkeyRegistered ? "已注册" : "★注册失败（被占用？）")}");
+
+        // ★★ 热键被占用时**醒目警告**。
+        //
+        //   这个坑踩过两次了：旧版本的探针还在后台跑，把 Alt+V 占着，
+        //   于是新版本注册失败 → 用户按 Alt+V 弹出的是**最老那个版本** →
+        //   "你怎么还没改"。查进程表才发现。
+        //
+        //   所以这里直接把话说清楚，省得下次还要查。
+        if (!_altHotkeyRegistered)
+        {
+            Console.WriteLine();
+            Console.WriteLine("  ╔══════════════════════════════════════════════════════════╗");
+            Console.WriteLine("  ║  ★ 警告：Alt+V 被另一个进程占着，本进程的九宫格是死的！   ║");
+            Console.WriteLine("  ║                                                          ║");
+            Console.WriteLine("  ║  多半是旧版本的探针还在后台跑（它先注册、它独占）。      ║");
+            Console.WriteLine("  ║  这样你按 Alt+V 弹出的是那个**旧版本**，不是这份代码。    ║");
+            Console.WriteLine("  ║                                                          ║");
+            Console.WriteLine("  ║  解决：先关掉所有旧的 S2Strip，再启动这一个。            ║");
+            Console.WriteLine("  ║        taskkill /IM S2Strip.exe /F                       ║");
+            Console.WriteLine("  ╚══════════════════════════════════════════════════════════╝");
+            Console.WriteLine();
+        }
 
         // Q5 的背景数字：系统的滚轮路由设置。
         //   0 = 焦点窗口收滚轮（默认）；1 = 也发给悬停窗口；2 = 只发给悬停窗口

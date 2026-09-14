@@ -54,32 +54,24 @@ internal sealed class GridWindow : Window
     private IntPtr _hwnd;
     private string _lastShown = "(还没显示过)";
 
-    /// <summary>按下 Alt+V 那一刻的鼠标位置（物理像素）—— 方向判定的原点</summary>
+    /// <summary>
+    /// 圆心（物理像素）—— 按下 Alt+V 那一刻的光标位置，**全程固定不动**。
+    ///
+    /// ★ 第四轮的关键认识：只记一个固定的圆心，不要记"起点/锚点"那类会移动的基准。
+    ///   前三轮我一直在"起点"上做文章，而正确模型里根本没有起点这回事。
+    /// </summary>
     private int _originX;
     private int _originY;
 
     private int _activeIndex = -1;
 
-    // ── 第三轮：运动方向 + 锁定 ─────────────────────────────────────
-    //
-    // 用户反馈「鼠标只要移动过了，就不能再选中最中心的取消方块」，
-    // 而且「往下移动一点就直接选中 21」—— 按"正在往哪个方向划"判，不是按方位判。
-    //
-    // 做法：每帧把位移**累计**起来，攒够 MoveThreshold 就用累计方向重判一次，
-    //      然后清零重新攒。判断逻辑全在 GridSelection.Resolve 里（纯函数、可单测）。
-
-    /// <summary>上一次判定出来的方位。-1 = 还没动过（松手就是取消）。</summary>
-    private int _lastDirection = -1;
-
     /// <summary>
-    /// 判定锚点（物理像素）—— **上一次判出方向时的光标位置**。
+    /// 上一次采到的格子。-1 = 还没动过（松手就是取消）。
     ///
-    /// 每次都看光标相对这个锚点位移了多少，
-    /// 所以"往上划→01、往下划→21、再往上划→又回 01"是自然成立的。
-    /// 锚点在每次判定出方向后挪到当前光标位置。
+    /// 用户要求「只要移动过了就不能选中心」，所以一旦它变成有效值，
+    /// 就再也不会回到 -1 —— 除非 Esc 或重新弹出。
     /// </summary>
-    private int _anchorX;
-    private int _anchorY;
+    private int _lastIndex = -1;
 
     /// <summary>格子边长（物理像素）—— 显示时按 DPI 算</summary>
     private int _cellPx;
@@ -277,11 +269,11 @@ internal sealed class GridWindow : Window
         _originY = cursor.Y;
 
         // ★ 每次弹出都要把"这一次的选择状态"清零 ——
-        //   上一次按 Alt+V 选过什么、手划过多少，都不能带到这一次来。
+        //   上一次按 Alt+V 选过什么，都不能带到这一次来。
         //   忘了清的话，会出现"刚弹出就已经选中了 21"这种莫名其妙的现象。
-        _lastDirection = -1;
-        _anchorX = cursor.X;
-        _anchorY = cursor.Y;
+        _lastIndex = -1;
+        _originX = cursor.X;
+        _originY = cursor.Y;
 
         HideCursor();
 
@@ -299,8 +291,16 @@ internal sealed class GridWindow : Window
     // ── 方向选择 ────────────────────────────────────────────────────
 
     /// <summary>
-    /// 由外部 60Hz 轮询调用：读鼠标位置 → 算方位 → 更新高亮。
-    /// 只在**选中格变了**时才碰 UI —— 这是 D9 那条省电规矩。
+    /// 由外部 60Hz 轮询调用：读鼠标位置 → 采样方位 → **逐格路过** → 更新高亮。
+    ///
+    /// ★ 第四轮的核心：换格时不再"啪"地跳过去，而是把中间那些格子
+    ///   依次点亮一遍。高亮会**扫过去**，这就是用户要的"轮盘感"。
+    ///
+    ///   用户原话：「选到最左边的时候，再去选最右边，
+    ///   你必须根据鼠标的移动方向顺时针到最右边，或者逆时针到最右边。
+    ///   而你做的是跳过中间直接到最右边。」
+    ///
+    /// 省电：每 tick 只做纯数学，只有路径非空时才碰 UI（D9 那条规矩）。
     /// </summary>
     public void PollSelection()
     {
@@ -313,21 +313,41 @@ internal sealed class GridWindow : Window
 
         GetCursorPos(out POINT p);
 
-        var r = GridSelection.Resolve(p.X - _anchorX, p.Y - _anchorY, _lastDirection);
+        int sampled = GridSelection.Sample(p.X - _originX, p.Y - _originY);
 
-        // ★ 按移动方向判出来的时候，把锚点挪到当前光标 ——
-        //   "这一小段移动已经用掉了"。下一次再判就要重新位移够阈值。
-        if (r.ConsumedMotion)
+        // 死区里：
+        //   还没选过（_lastIndex < 0）→ 保持 -1（松手就是取消）
+        //   选过了                    → ★ 锁定，保持上一次，回不到取消
+        //   —— 用户明确要求「只要移动过了就不能选中心」
+        if (sampled < 0)
         {
-            _anchorX = p.X;
-            _anchorY = p.Y;
+            if (_lastIndex < 0 && _activeIndex != -1) SetActive(-1);
+            return;
         }
 
-        if (r.Index >= 0) _lastDirection = r.Index;
+        if (sampled == _lastIndex) return;   // 方位没变，什么都不用做
 
-        if (r.Index == _activeIndex) return;
+        // ★ 路过：把从上一格到这一格之间要经过的每一格，依次点亮一遍
+        var path = GridSelection.PathTo(_lastIndex, sampled);
 
-        SetActive(r.Index);
+        _lastIndex = sampled;
+
+        if (path.Count <= 1)
+        {
+            SetActive(sampled);
+            return;
+        }
+
+        // 一次性把整条路径应用到视觉上。
+        //
+        // 这里是同步循环、不是逐帧动画 —— 因为轮询是 60Hz，
+        // 而人手划过去本来就只需要几十毫秒，逐帧反而会因为
+        // 采样太密而"每一格都停不住"，看着更糊。
+        // 同步扫一遍能让每一格至少被画一次，日志里也能看到完整路径。
+        foreach (int step in path)
+        {
+            SetActive(step);
+        }
     }
 
     public int CommitSelection() => _activeIndex;
@@ -335,7 +355,7 @@ internal sealed class GridWindow : Window
     /// <summary>Esc 取消 —— 强制清掉选中状态，回到"未动过"</summary>
     public void CancelSelection()
     {
-        _lastDirection = -1;
+        _lastIndex = -1;
         ClearActive();
     }
 

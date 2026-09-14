@@ -1,70 +1,100 @@
 using System;
+using System.Collections.Generic;
 
 namespace S2Strip;
 
 /// <summary>
-/// GridSelection 的自测 —— 八个方位 + 死区 + 边界。
+/// GridSelection 的自测 —— 八方位 + 死区 + 扇区边界 + **路过**。
 ///
-/// 为什么值得单独写：方向判定是九宫格里最容易出错的纯逻辑，
-/// 出错的表现是"往右上拖却选了左边"，靠肉眼调试极难定位。
-/// 这些用例全部跑通再去看窗口。
+/// 重点是最后一类："换格必须逐格路过中间格"。
+/// 这是第四轮的核心（轮盘手感），也是我前三轮一直没做对的东西。
 /// </summary>
 internal static class GridSelectionTests
 {
     private static int _pass;
     private static int _fail;
 
+    /// <summary>半径 R：足够远，肯定出了死区</summary>
+    private const double R = 100;
+
     public static void Run()
     {
+        _pass = 0;
+        _fail = 0;
+
         Console.WriteLine();
         Console.WriteLine("── GridSelection 自测 ────────────────────────────");
 
-        // ① 八个方位各来一发（位移 100px）
-        //    参数顺序：Check(名字, 期望宫格号, 位移 dx, 位移 dy)
-        Check("往上划 (0,-100)", 0, 0, -100);
-        Check("往右上划 (100,-100)", 1, 100, -100);
-        Check("往右划 (100,0)", 2, 100, 0);
-        Check("往右下划 (100,100)", 3, 100, 100);
-        Check("往下划 (0,100)", 4, 0, 100);
-        Check("往左下划 (-100,100)", 5, -100, 100);
-        Check("往左划 (-100,0)", 6, -100, 0);
-        Check("往左上划 (-100,-100)", 7, -100, -100);
+        // ① 八个方位各来一发
+        CheckSample("正上 (0,-R)", 0, 0, -R);
+        CheckSample("右上 (R,-R)", 1, R, -R);
+        CheckSample("正右 (R,0)", 2, R, 0);
+        CheckSample("右下 (R,R)", 3, R, R);
+        CheckSample("正下 (0,R)", 4, 0, R);
+        CheckSample("左下 (-R,R)", 5, -R, R);
+        CheckSample("正左 (-R,0)", 6, -R, 0);
+        CheckSample("左上 (-R,-R)", 7, -R, -R);
 
-        // ② 没动 / 动得不够 → 取消；动够了 → 有效
-        Check("原地不动 (0,0)", -1, 0, 0);
-        Check("微动 (6,6) 不够阈值", -1, 6, 6);
-        Check("刚够阈值往下 (0,10)", 4, 0, 10);
+        // ② 死区
+        CheckSample("原地不动", -1, 0, 0);
+        CheckSample("微动 (8,8)", -1, 8, 8);
+        CheckSample("刚出死区往下 (0,17)", 4, 0, 17);
 
         // ③ 扇区边界：往上扇区的边界在 ±22.5°
-        Check("偏右 22° (38,-94)", 0, 38, -94);
-        Check("偏右 23° (39,-92)", 1, 39, -92);
+        CheckSample("偏右 22° (38,-94)", 0, 38, -94);
+        CheckSample("偏右 23° (39,-92)", 1, 39, -92);
 
-        // ④ 距离不影响方向
-        Check("极远往下 (0,9999)", 4, 0, 9999);
-        Check("刚好往下 (0,25)", 4, 0, 25);
+        // ④ 距离不影响方位（拖多远都按方位算）
+        CheckSample("极远往下 (0,9999)", 4, 0, 9999);
+        CheckSample("极远往右 (9999,0)", 2, 9999, 0);
 
         // ⑤ 中心格 (1,1) 不应该映射到任何宫格
         int center = GridSelection.FromCell(1, 1);
         Report("中心格 (1,1) → -1", center == -1, $"实际 {center}");
 
-        // ══ ⑥ 第四轮核心：这是一台"拨盘"，看的是**正在往哪边划** ══
+        // ══ ⑥ 第四轮核心：路过 ══════════════════════════════════════
         //
-        // 用户的原话与考题：
-        //   「你往上拖选择了 01，往下拖一点就选择了 21，
-        //     但是如果**再往上拖，它应该立马回到 01**，因为往上拖动了。」
-        //   「当用户选择了 01，此时鼠标往右移动了一小段，此时选择的应该是哪个区块？」
+        // 用户原话：
+        //   「选到最左边的时候，再去选最右边，你必须根据鼠标的移动方向
+        //     顺时针到最右边，或者逆时针到最右边。
+        //     而你做的是跳过中间直接到最右边。」
 
-        CheckMove("往下划一点（从 01）→ 21", 4, 0, 30, last: 0);
-        CheckMove("再往上划一点 → 立刻回到 01", 0, 0, -30, last: 4);
-        CheckMove("★ 用户考题：从 01 往右划一点 → 12", 2, 30, 0, last: 0);
-        CheckMove("从 01 往左划一点 → 10", 6, -30, 0, last: 0);
-        CheckMove("从 21 往右划一点 → 12", 2, 30, 0, last: 4);
-        CheckMove("从 12 往上划一点 → 01", 0, 0, -30, last: 2);
+        // 01(0) → 21(4)：正好半圈，固定走顺时针 → 02,12,22,21
+        CheckPath("01 → 21（半圈，固定顺时针）", 0, 4, new[] { 1, 2, 3, 4 });
 
-        // ⑦ 动得不够阈值 → 保持上一次，不换也不取消
-        CheckMove("位移不够阈值 → 保持 21", 4, 0, 5, last: 4);
-        CheckMove("位移不够且没选过 → 仍是取消", -1, 0, 5, last: -1);
-        CheckMove("★ 来回抖动净位移小 → 保持原选（不会疯跳）", 4, 6, 6, last: 4);
+        // ★ 用户最在意的那条：01 → 12 必须经过 02
+        CheckPath("★ 01 → 12 必须经过 02", 0, 2, new[] { 1, 2 });
+
+        // 反向：12 → 01 必须经过 02
+        CheckPath("★ 12 → 01 必须经过 02（反向）", 2, 0, new[] { 1, 0 });
+
+        // 20 → 22：相邻两格，只走一步
+        CheckPath("20 → 22 走最短（经过 21）", 5, 3, new[] { 4, 3 });
+
+        // 22 → 20：反方向，也经过 21
+        CheckPath("22 → 20 走最短（经过 21）", 3, 5, new[] { 4, 5 });
+
+        // 00(7) → 02(1)：2 步
+        CheckPath("00 → 02 经过 01", 7, 1, new[] { 0, 1 });
+
+        // 同一个格子 → 不用换
+        CheckPath("01 → 01 空路径", 0, 0, Array.Empty<int>());
+
+        // 从无效状态出发 → 不产生路径（调用方直接跳过去就行）
+        CheckPath("-1 → 03 空路径", -1, 3, Array.Empty<int>());
+
+        // ══ ⑦ 绕一圈：8 步应该正好回到原点 ══════════════════════════
+        {
+            int cur = 0;
+            var seen = new List<int> { cur };
+            for (int i = 0; i < 8; i++)
+            {
+                cur = (cur + 1) % 8;
+                seen.Add(cur);
+            }
+            bool ok = seen.Count == 9 && seen[8] == 0;
+            Report("顺时针绕 8 步回到原点", ok, $"实际 {string.Join(",", seen)}");
+        }
 
         // ⑧ 坐标映射自洽
         CheckCell("0 → 01", 0, 0, 1);
@@ -76,23 +106,34 @@ internal static class GridSelectionTests
         Console.WriteLine("──────────────────────────────────────────────────");
     }
 
-    /// <summary>不带"上次方位"的检查（等价于"还没动过"）</summary>
-    private static void Check(string name, int expected, double moveX, double moveY)
+    private static void CheckSample(string name, int expected, double dx, double dy)
     {
-        var r = GridSelection.Resolve(moveX, moveY, -1);
-        Report($"{name} → {(expected < 0 ? "取消" : GridSelection.Label(expected))}",
-               r.Index == expected,
-               r.Index == expected ? "" : $"实际得到 {(r.Index < 0 ? "取消" : GridSelection.Label(r.Index))}");
+        int actual = GridSelection.Sample(dx, dy);
+        string exp = expected < 0 ? "取消" : GridSelection.Label(expected);
+        string act = actual < 0 ? "取消" : GridSelection.Label(actual);
+        Report($"{name} → {exp}", actual == expected, actual == expected ? "" : $"实际得到 {act}");
     }
 
-    /// <summary>带"上次方位"的检查 —— 拨盘的核心规则全靠它</summary>
-    private static void CheckMove(string name, int expected,
-                                  double moveX, double moveY, int last)
+    private static void CheckPath(string name, int from, int to, int[] expected)
     {
-        var r = GridSelection.Resolve(moveX, moveY, last);
-        Report($"{name} → {(expected < 0 ? "取消" : GridSelection.Label(expected))}",
-               r.Index == expected,
-               r.Index == expected ? "" : $"实际得到 {(r.Index < 0 ? "取消" : GridSelection.Label(r.Index))}");
+        var actual = GridSelection.PathTo(from, to);
+        bool ok = actual.Count == expected.Length;
+        if (ok)
+        {
+            for (int i = 0; i < expected.Length; i++)
+            {
+                if (actual[i] != expected[i]) { ok = false; break; }
+            }
+        }
+
+        string exp = expected.Length == 0 ? "（空）" : string.Join("→", Labels(expected));
+        string act = actual.Count == 0 ? "（空）" : string.Join("→", Labels(actual));
+        Report($"{name} → {exp}", ok, ok ? "" : $"实际得到 {act}");
+    }
+
+    private static IEnumerable<string> Labels(IReadOnlyList<int> indexes)
+    {
+        foreach (int i in indexes) yield return GridSelection.Label(i);
     }
 
     private static void CheckCell(string name, int index, int row, int col)
