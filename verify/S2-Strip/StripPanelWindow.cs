@@ -65,6 +65,10 @@ internal sealed class StripPanelWindow : Window
     private static readonly Color TimeFg = Color.FromRgb(0x9A, 0x9A, 0x9A);
     private static readonly Color HintFg = Color.FromRgb(0xB0, 0xB0, 0xB0);
 
+    /// <summary>被点击的那一条：黄底 + 黄边，一眼看出"我选了哪个"。</summary>
+    private static readonly Color SelectedBg = Color.FromRgb(0x4A, 0x3E, 0x1A);
+    private static readonly Color SelectedEdge = Color.FromRgb(0xFF, 0xC8, 0x3C);
+
     /// <summary>
     /// 滚轮一步滚多少 DIP。
     ///
@@ -77,6 +81,18 @@ internal sealed class StripPanelWindow : Window
     ///   现在行高约 26 DIP，24 DIP ≈ 0.92 行 —— 明显能看到位移。
     /// </summary>
     private const double WheelStepDip = 24.0;
+
+    /// <summary>正文行高（DIP）。条目高度固定为它的两倍 —— 见 MakeRow。</summary>
+    private const double RowTextHeightDip = 17.0;
+
+    /// <summary>
+    /// 点击后黄框保持多久（毫秒）再撤销。
+    ///
+    /// ★ 用户第三轮的要求：「点击之后是选中了想粘贴的文字，但窗口依然不关闭，
+    ///   等到我的鼠标离开后再关闭」——
+    ///   这样选错了还能改，不用重新悬停一次再重来。
+    /// </summary>
+    private const int SelectedHoldMs = 3000;
 
     private readonly ClipboardHistory _history;
     private readonly Action<string> _log;
@@ -96,6 +112,10 @@ internal sealed class StripPanelWindow : Window
 
     /// <summary>当前有没有设"鼠标穿透"</summary>
     private bool _clickThrough;
+
+    /// <summary>当前被点亮黄框的那一条（点击后保留一小会儿，方便确认点对了没）</summary>
+    private Border? _selectedRow;
+    private DateTime _selectedAt;
 
     // ── 视觉元素 ───────────────────────────────────────────────────
     private Border _panel = null!;
@@ -657,60 +677,62 @@ internal sealed class StripPanelWindow : Window
     }
 
     /// <summary>
-    /// 一行历史条目。
+    /// 一行历史条目。**高度固定为两行**，内容最多两行，超出打省略号。
     ///
-    /// ★ 第一轮是两行（预览最多两行 + 时间独占一行），行高约 65 DIP。
-    ///   面板变矮之后（149 DIP）那样只放得下 1.7 行，根本没法用。
-    ///   改成**单行紧凑**：预览一行 + 时间同排靠右，行高约 26 DIP → 一屏约 4 行。
+    /// ★ 用户第三轮的要求：「把文字的框框放大一倍，一个框框能存储两行文字，
+    ///   就算文字只有一行，也得把框框设置为两行的大小。
+    ///   如果文字个数超过两行能存储的大小，再用省略号代替。」
     ///
-    /// 顺带解决了滚轮那个问题：行矮了之后一步 24 DIP 的位移占比明显，
-    /// 一眼就能看出滚了没有。
+    ///   所以高度是**写死的两行**（RowTextHeightDip × 2），
+    ///   不给内容留伸缩余地 —— 列表看起来才整齐，滚轮位移也才好判断。
+    ///
+    /// 布局：上半是正文（最多两行），下半是「序号 + 时间」一行小字。
     /// </summary>
     private Border MakeRow(int ordinal, ClipboardHistory.Entry entry)
     {
-        string preview = entry.Text.Replace("\r", " ").Replace("\n", " ");
-        if (preview.Length > 60) preview = preview[..60] + "…";
-
-        // 单行：左边预览占满剩余宽度，右边时间固定宽度。
-        // 两列都用 GridLength 明确分配 —— 宽度不靠内容去撑（第一轮的教训）。
-        var line = new Grid();
-        line.ColumnDefinitions.Add(new ColumnDefinition());
-        line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        // 正文用 TextWrapping.Wrap + 固定高度 + TextTrimming：
+        //   WPF 的规矩是 —— 给了 Height 就不再自动截断，
+        //   所以要在 Height 之外再给一个 MaxHeight 才会出现省略号。
+        //   这里 Height = MaxHeight = 两行，两行放不下就出省略号。
+        double twoLines = RowTextHeightDip * 2;
 
         var text = new TextBlock
         {
-            Text = preview,
+            Text = entry.Text.Replace("\r", " ").Replace("\n", " "),
             Foreground = Brushes.White,
             FontFamily = new FontFamily("Microsoft YaHei UI"),
             FontSize = 12,
-            TextWrapping = TextWrapping.NoWrap,
+            LineHeight = RowTextHeightDip,
+            TextWrapping = TextWrapping.Wrap,
+            Height = twoLines,
+            MaxHeight = twoLines,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            VerticalAlignment = VerticalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top,
         };
-        line.Children.Add(text);
 
         var time = new TextBlock
         {
             Text = $"{ordinal}.  {entry.At:HH:mm:ss}",
-            Foreground = new SolidColorBrush(Color.FromRgb(0x9A, 0x9A, 0x9A)),
+            Foreground = new SolidColorBrush(TimeFg),
             FontFamily = new FontFamily("Microsoft YaHei UI"),
             FontSize = 10,
-            Margin = new Thickness(8, 0, 0, 0),
-            VerticalAlignment = VerticalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Bottom,
         };
-        Grid.SetColumn(time, 1);
-        line.Children.Add(time);
+
+        var stack = new StackPanel();
+        stack.Children.Add(text);
+        stack.Children.Add(time);
 
         var row = new Border
         {
             Background = new SolidColorBrush(RowBg),
             BorderBrush = new SolidColorBrush(RowBorder),
             BorderThickness = new Thickness(0, 0, 0, 1),
-            Padding = new Thickness(8, 5, 8, 5),
-            Margin = new Thickness(0, 0, 0, 2),
+            Padding = new Thickness(8, 4, 8, 4),
+            Margin = new Thickness(0, 0, 0, 3),
             Cursor = Cursors.Hand,
             ClipToBounds = true,
-            Child = line,
+            Child = stack,
             Tag = entry.Text,
             ToolTip = entry.Text,
         };
@@ -724,9 +746,46 @@ internal sealed class StripPanelWindow : Window
 
     private void OnRowClicked(object sender, MouseButtonEventArgs e)
     {
-        if (sender is not Border { Tag: string text }) return;
+        if (sender is not Border { Tag: string text } row) return;
+
         _log($"  [点击] 「{(text.Length > 30 ? text[..30] + "…" : text)}」");
+
+        // ★ 先把上一条的黄框撤掉，再点亮这一条 —— 保证同时只有一条是"选中的"
+        ClearSelection();
+        row.Background = new SolidColorBrush(SelectedBg);
+        row.BorderBrush = new SolidColorBrush(SelectedEdge);
+        row.BorderThickness = new Thickness(0, 0, 0, 2);
+        _selectedRow = row;
+
+        // 黄框保持 SelectedHoldMs 后自动撤销 —— 让用户看得出"刚才点的是哪条"
+        _selectedAt = DateTime.Now;
+
         ItemActivated?.Invoke(text);
+    }
+
+    /// <summary>撤掉当前的高亮框</summary>
+    private void ClearSelection()
+    {
+        if (_selectedRow is null) return;
+        _selectedRow.Background = new SolidColorBrush(RowBg);
+        _selectedRow.BorderBrush = new SolidColorBrush(RowBorder);
+        _selectedRow.BorderThickness = new Thickness(0, 0, 0, 1);
+        _selectedRow = null;
+    }
+
+    /// <summary>
+    /// 由外面每 tick 调一次：黄框到期了就撤掉。
+    /// **不能用 DispatcherTimer** —— 那会一直唤醒渲染管线（D9 的规矩）。
+    /// 挂在这个已有的 100ms 心跳上，反正是免费的。
+    /// </summary>
+    public void TickSelection()
+    {
+        if (_selectedRow is null) return;
+        if ((DateTime.Now - _selectedAt).TotalMilliseconds >= SelectedHoldMs)
+        {
+            ClearSelection();
+            _log("  [选中标记] 已自动撤销");
+        }
     }
 
     /// <summary>

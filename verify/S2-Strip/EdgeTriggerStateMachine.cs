@@ -162,12 +162,22 @@ internal sealed class EdgeTriggerStateMachine
         }
     }
 
-    /// <summary>点了某一条 → 写剪贴板，然后强制收起（不等迟滞）</summary>
+    /// <summary>
+    /// 点了某一条。
+    ///
+    /// ★ 第三轮改：**不再立刻收起**。
+    ///   用户的原话：「点击之后是选中了想粘贴的文字，但窗口依然不关闭，
+    ///   等到我的鼠标离开后再关闭」—— 选错了还能改，不用重新悬停一次。
+    ///
+    ///   所以这里什么都不做：面板继续开着，
+    ///   鼠标离开后照常走 CollapsePending → Collapse 那套（带 150ms 迟滞）。
+    /// </summary>
     public void CommitClicked()
     {
-        Current = Phase.Idle;
-        _hoverSince = DateTime.MinValue;
-        _leftSince = DateTime.MinValue;
+        // 故意留空。收起的唯一触发条件是"鼠标离开"（或外部 ForceCollapse）。
+        //
+        // 历史：第一轮这里做的是"立刻回到 Idle"，
+        // 结果用户点了发现选错也没法改，窗口已经没了。
     }
 
     /// <summary>外部强制收起（逃生、异常路径）</summary>

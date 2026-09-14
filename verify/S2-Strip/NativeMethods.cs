@@ -34,7 +34,10 @@ internal static class NativeMethods
     // ── RegisterHotKey ──────────────────────────────────────────────
     internal const uint MOD_ALT = 0x0001;
     internal const uint MOD_CONTROL = 0x0002;
+    internal const uint MOD_SHIFT = 0x0004;
     internal const uint MOD_NOREPEAT = 0x4000;
+    internal const uint VK_V = 0x56;
+    /// <summary>逃生热键用：Ctrl+Alt+Q</summary>
     internal const uint VK_Q = 0x51;
 
     // ── 窗口消息 ────────────────────────────────────────────────────
@@ -170,8 +173,79 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
+    // ── SendInput（九宫格松手后要模拟 Ctrl+V）────────────────────────
+    internal const uint INPUT_KEYBOARD = 1;
+    internal const uint KEYEVENTF_KEYUP = 0x0002;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct KEYBDINPUT
+    {
+        public ushort Vk;
+        public ushort Scan;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MOUSEINPUT
+    {
+        public int Dx;
+        public int Dy;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
+    /// <summary>
+    /// INPUT 是个联合体，**体积由最大的成员决定**。
+    ///
+    /// ★ 这里是 SendInput 一直返回 0 的根因（S0 踩过）：
+    ///   如果联合体里只声明 KEYBDINPUT，x64 下 Marshal.SizeOf 算出 32，
+    ///   但系统的 INPUT 实际是 40（MOUSEINPUT 更大）。
+    ///   SendInput 校验 cbSize 不符 → **直接返回 0，一个事件都不送，而且不报错**。
+    ///
+    ///   把 MOUSEINPUT 也放进来，尺寸自然就对了。
+    /// </summary>
+    [StructLayout(LayoutKind.Explicit)]
+    internal struct INPUT
+    {
+        [FieldOffset(0)] public uint Type;
+        [FieldOffset(8)] public KEYBDINPUT Keyboard;
+        [FieldOffset(8)] public MOUSEINPUT Mouse;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern uint SendInput(uint count, INPUT[] inputs, int size);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr GetFocus();
+
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool GetCursorPos(out POINT point);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern short GetAsyncKeyState(int vKey);
+
+    /// <summary>
+    /// 整批替换系统级鼠标光标。这是"光标是每个窗口自己的"这个事实的正解。
+    ///
+    /// 为什么 SetCursor 不行（S0 试了两轮）：
+    ///   光标归属于**某个窗口**，只有那个窗口是前台/覆盖时系统才用它。
+    ///   九宫格是 WS_EX_NOACTIVATE —— 永远不是前台窗口，所以设了也白设。
+    ///
+    /// ⚠️ 它会真的改掉系统光标，退出前**必须** SystemParametersInfo(SPI_SETCURSORS)
+    ///    还原，否则用户重启前都看不到鼠标指针。
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool SetSystemCursor(IntPtr hcur, uint id);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool SystemParametersInfo(uint uiAction, uint uiParam, IntPtr pvParam, uint fWinIni);
+
+    internal const uint OCR_NORMAL = 32512;
+    internal const uint SPI_SETCURSORS = 0x0057;
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool AddClipboardFormatListener(IntPtr hWnd);

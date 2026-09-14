@@ -76,17 +76,24 @@ internal sealed class Geometry
     /// <summary>可见条子的宽（真实 2mm）</summary>
     public const double StripHeightMm = 2.0;
 
-    /// <summary>面板宽（真实 64mm = 6.4cm）</summary>
-    public const double PanelWidthMm = 64.0;
-
     /// <summary>
-    /// 面板高 = 宽 ÷ 黄金比（真实 39.55mm）。
+    /// 面板宽（真实 47.5mm）。
     ///
-    /// 注意是**除**不是乘：用户要的是"竖着的长方形"。
-    /// 黄金比竖长方形传统上指「高 : 宽 = 1 : 1.618」，即宽 = 1.618 × 高，
-    /// 所以高 = 宽 ÷ 1.618。
+    /// ★ 用户第三轮实测后的要求：「把现在长方形的宽乘 1.2，长按照黄金比例放大，
+    ///   然后把放大过后的长方形竖起来」。
+    ///
+    ///   推算（用户确认过）：
+    ///     现在横着那条边 = 64mm  ×1.2  = 76.8mm   ← 当作**长边**
+    ///     短边 = 76.8 ÷ 1.618 = 47.5mm            ← 就是新的宽度
+    ///   于是矩形 47.5 × 76.8，本来就是竖的，不用"转"。
     /// </summary>
-    public static double PanelHeightMm => PanelWidthMm / Golden;
+    public static double PanelWidthMm => PanelWidthBaseMm * 1.2 / Golden;
+
+    /// <summary>上一轮的面板宽（横着那条边）。只用来推导上面的新尺寸。</summary>
+    private const double PanelWidthBaseMm = 64.0;
+
+    /// <summary>面板高 = 宽 × 黄金比 = 76.8mm（真实 7.68cm）</summary>
+    public static double PanelHeightMm => PanelWidthMm * Golden;
 
     // ══ 位置（用户的硬性要求）════════════════════════════════════
     //

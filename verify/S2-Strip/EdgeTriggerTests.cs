@@ -104,14 +104,28 @@ internal static class EdgeTriggerTests
                   a2 == EdgeTriggerStateMachine.Action.None, ref passed, ref failed);
         }
 
-        // ── 6. 点了一条 → 强制收起 ──
+        // ── 6. 点了一条 → 面板**不关**，等鼠标离开才关 ──
         {
             var (sm, clock) = Make();
             Expand(sm, clock);
 
             sm.CommitClicked();
-            Check("点完条目 → 立刻回到收起态",
-                  sm.Current == EdgeTriggerStateMachine.Phase.Idle, ref passed, ref failed);
+            Check("点完条目 → 面板保持展开（能改主意）",
+                  sm.Current == EdgeTriggerStateMachine.Phase.Expanded, ref passed, ref failed);
+
+            // 鼠标还在面板里 → 继续开着
+            clock.Advance(1000);
+            var a = sm.Tick(cursorInside: true);
+            Check("点完且鼠标仍在面板里 → 不收起",
+                  a == EdgeTriggerStateMachine.Action.None, ref passed, ref failed);
+
+            // 鼠标离开 → 走正常的迟滞收起
+            clock.Advance(500);
+            sm.Tick(cursorInside: false);
+            clock.Advance(EdgeTriggerStateMachine.CollapseDelayMs);
+            var a2 = sm.Tick(cursorInside: false);
+            Check("点完之后鼠标离开 → 正常收起",
+                  a2 == EdgeTriggerStateMachine.Action.Collapse, ref passed, ref failed);
         }
 
         // ── 7. 展开 → 收起 → 再展开，能正常工作（不能只灵一次）──
@@ -120,7 +134,7 @@ internal static class EdgeTriggerTests
             Expand(sm, clock);
             clock.Advance(300);
             sm.Tick(cursorInside: false);
-            clock.Advance(150);
+            clock.Advance(EdgeTriggerStateMachine.CollapseDelayMs);
             sm.Tick(cursorInside: false);
             Check("收起后回到 Idle",
                   sm.Current == EdgeTriggerStateMachine.Phase.Idle, ref passed, ref failed);
@@ -128,6 +142,16 @@ internal static class EdgeTriggerTests
             clock.Advance(1000);
             var a = Expand(sm, clock);
             Check("第二次也能正常展开", a, ref passed, ref failed);
+        }
+
+        // ── 8. 点了条目之后，ForceCollapse 仍然能强制收起 ──
+        {
+            var (sm, clock) = Make();
+            Expand(sm, clock);
+            sm.CommitClicked();
+            sm.ForceCollapse();
+            Check("ForceCollapse 不受『点击后不收起』影响",
+                  sm.Current == EdgeTriggerStateMachine.Phase.Idle, ref passed, ref failed);
         }
 
         // ── 8. 鼠标一直在里面不动 → 不该反复触发 Expand ──

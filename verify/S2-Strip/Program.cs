@@ -27,6 +27,7 @@ namespace S2Strip;
 internal static class Program
 {
     private const int ExitHotKeyId = 0x0C21;
+    private const int AltHotKeyId = 0x0C22;
 
     /// <summary>
     /// 剪贴板事件去抖窗口（毫秒）。
@@ -77,6 +78,14 @@ internal static class Program
     private static int _expandCount;
     private static int _collapseCount;
 
+    // 九宫格
+    private static GridWindow? _grid;
+    private static bool _altHotkeyRegistered;
+    private static volatile bool _altDown;
+    private static DateTime _altDownAt;
+    private static bool _gridVisible;
+    private static int _gridShowCount;
+
     private static readonly EdgeTriggerStateMachine Trigger = new();
 
     [STAThread]
@@ -90,6 +99,7 @@ internal static class Program
         // 纯逻辑先测通过再看窗口 —— 出了问题能立刻分清是"算错了"还是"没画对"
         EdgeTriggerTests.Run();
         HistoryPromoteTests.Run();
+        GridSelectionTests.Run();
 
         PrintHeader();
 
@@ -199,6 +209,18 @@ internal static class Program
                                          MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_Q);
         V.Log($"  ★ 逃生热键 Ctrl+Alt+Q = {(exitHotkey ? "已注册" : "★注册失败")}");
 
+        // ── 九宫格热键 Alt+V ──
+        // ★ 这是用户第三轮问「九宫格不见了」的答案。
+        //
+        //   九宫格本身没坏，代码一直在 verify\S0-Spine\ 里，
+        //   但那是**另一个 exe**。这个 S2 探针从建起来就没注册过 Alt+V ——
+        //   所以跑 S2 的时候按 Alt+V 当然不会有反应。
+        //
+        //   顺手在这轮把它并进来，两个功能同跑，省得来回换 exe。
+        _altHotkeyRegistered = RegisterHotKey(_msgHwnd, AltHotKeyId,
+                                              MOD_ALT | MOD_NOREPEAT, VK_V);
+        V.Log($"  ★ 九宫格热键 Alt+V = {(_altHotkeyRegistered ? "已注册" : "★注册失败（被占用？）")}");
+
         // Q5 的背景数字：系统的滚轮路由设置。
         //   0 = 焦点窗口收滚轮（默认）；1 = 也发给悬停窗口；2 = 只发给悬停窗口
         //   我们是 NOACTIVATE 永不获焦，所以只有非 0 才有可能收到滚轮。
@@ -229,10 +251,18 @@ internal static class Program
 
         // ★ 预热之后必须**真的摆出来**。
         //   Prewarm() 结尾是 SW_HIDE，所以那之后条子是藏着的 ——
-        //   不补这一下，启动后右上角什么都没有（第一次差点就这么交出去了）。
+        //   不补这一下，启动后屏幕上什么都没有（第一次差点就这么交出去了）。
         //   条子是常驻可见的东西，程序一起来就该在那儿。
         _panel.ShowCollapsed();
         V.Log($"  ★ 条子已摆出：物理 {_panel.BoundsText}");
+
+        // ── 九宫格（Alt+V）也一起预热 ──
+        //   预热必须走一遍 WPF Show()，否则视觉树没 Measure/Arrange，
+        //   热键一按只会得到一个纯色空框（S0 为这件事白折腾过两轮）。
+        _grid = new GridWindow(History, V.Log);
+        new WindowInteropHelper(_grid).EnsureHandle();
+        _grid.Prewarm();
+        V.Log("  ★ 九宫格已预热（按住 Alt+V 弹出）");
     }
 
     // ── 消息处理 ────────────────────────────────────────────────────
@@ -244,6 +274,11 @@ internal static class Program
             case WM_HOTKEY when wParam.ToInt32() == ExitHotKeyId:
                 V.Log("[逃生热键] Ctrl+Alt+Q → 收尾退出");
                 _app?.Shutdown();
+                handled = true;
+                break;
+
+            case WM_HOTKEY when wParam.ToInt32() == AltHotKeyId:
+                OnAltPressed();
                 handled = true;
                 break;
 
@@ -294,6 +329,116 @@ internal static class Program
         }
     }
 
+    // ── 九宫格：按下 Alt+V ──────────────────────────────────────────
+
+    /// <summary>按下 Alt+V —— 在鼠标处弹出九宫格，藏起指针，进入选择模式。</summary>
+    private static void OnAltPressed()
+    {
+        if (_grid is null) return;
+
+        _altDown = true;
+        _altDownAt = DateTime.Now;
+
+        if (_gridVisible)
+        {
+            V.Log("  （九宫格已开着，忽略这次重复触发）");
+            return;
+        }
+
+        // 条子面板如果正开着，先收起来，免得两个窗口打架
+        if (_panel is not null && _panel.IsExpanded)
+        {
+            Trigger.ForceCollapse();
+            _panel.ShowCollapsed();
+        }
+
+        _gridShowCount++;
+        V.Log("");
+        V.Log($"[九宫格] 第 {_gridShowCount} 次弹出");
+        V.Log($"  弹出前 前台 = 0x{GetForegroundWindow():X8} "
+              + $"「{GetWindowTitle(GetForegroundWindow())}」");
+
+        _grid.ShowAtCursor();
+        _gridVisible = true;
+
+        V.Log($"  位置 = {_grid.LastShownPosition}");
+    }
+
+    /// <summary>松开 Alt —— 结算选中的那一格。</summary>
+    private static void OnAltReleased()
+    {
+        if (_grid is null) return;
+
+        int index = _grid.CommitSelection();
+        string label = _grid.ActiveCellLabel;
+
+        if (index < 0)
+        {
+            V.Log($"[九宫格] 松开 Alt → {label}，不粘贴");
+            _grid.HideGrid();
+            _gridVisible = false;
+            return;
+        }
+
+        var (r, c) = GridSelection.ToCell(index);
+        string? text = _grid.GetCellContent(r, c);
+
+        _grid.HideGrid();
+        _gridVisible = false;
+
+        if (string.IsNullOrEmpty(text))
+        {
+            V.Log($"[九宫格] ★ {label} 是空格子，不粘贴");
+            return;
+        }
+
+        V.Log($"[九宫格] 松开 Alt → 选中 {label}「{(text.Length > 30 ? text[..30] + "…" : text)}」");
+
+        // 粘出去的那条要变成最新的 —— 下次它就该出现在 01（正上方）
+        History.Promote(text);
+
+        // 写回剪贴板 → 注入 Ctrl+V
+        _selfWriting = true;
+        if (!ClipboardIo.WriteText(text))
+        {
+            _selfWriting = false;
+            V.Log("  ★❌ 写剪贴板失败");
+            return;
+        }
+        _lastSequence = GetClipboardSequenceNumber();
+
+        Thread.Sleep(20);
+        SendCtrlV();
+    }
+
+    /// <summary>
+    /// 模拟 Ctrl+V。
+    ///
+    /// ★ INPUT 那个联合体声明不对的话，SendInput 会**返回 0、一个事件都不送、
+    ///   而且不报错** —— S0 在这上面卡过好几轮，注释留在 NativeMethods.cs 里。
+    /// </summary>
+    private static void SendCtrlV()
+    {
+        int size = Marshal.SizeOf<INPUT>();
+        var inputs = new INPUT[4];
+
+        inputs[0].Type = INPUT_KEYBOARD;
+        inputs[0].Keyboard = new KEYBDINPUT { Vk = 0x11 /*Ctrl*/, Flags = 0 };
+
+        inputs[1].Type = INPUT_KEYBOARD;
+        inputs[1].Keyboard = new KEYBDINPUT { Vk = (ushort)VK_V, Flags = 0 };
+
+        inputs[2].Type = INPUT_KEYBOARD;
+        inputs[2].Keyboard = new KEYBDINPUT { Vk = (ushort)VK_V, Flags = KEYEVENTF_KEYUP };
+
+        inputs[3].Type = INPUT_KEYBOARD;
+        inputs[3].Keyboard = new KEYBDINPUT { Vk = 0x11, Flags = KEYEVENTF_KEYUP };
+
+        uint sent = SendInput((uint)inputs.Length, inputs, size);
+        V.Log($"  SendInput(Ctrl+V) → 送出 {sent}/4 个（INPUT 结构 {size} 字节）"
+              + (sent == 4 ? "" : $"  ★ 失败，错误码={Marshal.GetLastWin32Error()}"));
+    }
+
     // ── 轮询线程 ────────────────────────────────────────────────────
 
     /// <summary>
@@ -323,8 +468,49 @@ internal static class Program
 
                 Thread.Sleep(sleep);
 
+                // ── ① 九宫格：按着 Alt 就更新选中的方位，松开就结算 ──
+                //    这段和条子面板共用同一个循环，不用再开一个线程。
+                {
+                    bool altHeld = (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0
+                                || (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
+
+                    if (altHeld && _gridVisible && _grid is not null)
+                    {
+                        var g = _grid;
+                        g.Dispatcher.Invoke(() => g.PollSelection());
+                    }
+                    else if (!altHeld && _altDown)
+                    {
+                        _altDown = false;
+                        var g = _grid;
+                        bool heldLongEnough =
+                            (DateTime.Now - _altDownAt).TotalMilliseconds >= 120;
+
+                        if (_gridVisible && g is not null && heldLongEnough)
+                        {
+                            g.Dispatcher.Invoke(OnAltReleased);
+                        }
+                        else if (_gridVisible && g is not null)
+                        {
+                            V.Log($"  （Alt 只按了 {(DateTime.Now - _altDownAt).TotalMilliseconds:0}ms，忽略）");
+                            g.Dispatcher.Invoke(() => g.HideGrid());
+                            _gridVisible = false;
+                        }
+                    }
+                }
+
                 var panel = _panel;
                 if (panel is null) continue;
+
+                // 九宫格开着的时候不要去动条子，免得两个窗口抢鼠标
+                if (_gridVisible) continue;
+
+                // 顺手把"点击黄框"的过期检查挂在这个心跳上。
+                // 反正是已经存在的循环，不额外唤醒任何东西（D9 的规矩：不用 DispatcherTimer）。
+                if (panel.IsExpanded)
+                {
+                    panel.Dispatcher.Invoke(() => panel.TickSelection());
+                }
 
                 RectPx hit = panel.HitRect;
 
@@ -427,17 +613,16 @@ internal static class Program
             V.Log($"  ★❌ 前台窗口变了（展开时 0x{_foregroundAtExpand:X8} → 现在 0x{before:X8}）");
         }
 
-        // 先把面板收起来，视觉上干净
-        _panel.ShowCollapsed();
-
         // ── 顶置：点过的那条要变成最新的 ──
+        //   ★ 注意：**不再刷新列表 UI** —— 一刷新黄框就没了，
+        //     而用户要的是"点完之后还看得见我选了哪个"。
+        //     列表顺序在下次展开（FillList）时自然会更新。
         V.Log($"  {_panel.DescribeTop(5)}   ← 顶置前（前 5 条）");
         bool promoted = History.Promote(text);
-        _panel.FillList();
         V.Log($"  {_panel.DescribeTop(5)}   ← 顶置后（前 5 条）");
         V.Log($"  顶置结果：{(promoted ? "已提到最新" : "★ 没找到，可能已被挤出历史")}");
 
-        // ── 写剪贴板 ──
+        // 写剪贴板
         _selfWriting = true;
         if (!ClipboardIo.WriteText(text))
         {
@@ -464,6 +649,7 @@ internal static class Program
         }
 
         V.Log("  ⬜ 请人工确认：回原窗口按 Ctrl+V，文字出现了吗？");
+        V.Log("  ★ 注意：面板**不会**自动关闭 —— 选错了可以再点别的。鼠标离开才收起。");
     }
 
     // ── 自检 ────────────────────────────────────────────────────────
@@ -513,9 +699,14 @@ internal static class Program
         Console.WriteLine("── 收尾 ──────────────────────────────────────────");
 
         UnregisterHotKey(_msgHwnd, ExitHotKeyId);
+        if (_altHotkeyRegistered) UnregisterHotKey(_msgHwnd, AltHotKeyId);
         RemoveClipboardFormatListener(_msgHwnd);
 
+        // ★ 光标还原。这一步绝不能省 —— 漏了用户得重启才能看到鼠标。
+        CursorHider.Restore();
+
         V.Log($"  展开次数：{_expandCount}　收起次数：{_collapseCount}");
+        V.Log($"  九宫格弹出次数：{_gridShowCount}");
         V.Log($"  剪贴板事件数：{_clipboardEventCount}");
         V.Log($"  剪贴板最多重试：{_clipboardOpenAttemptsMax} 次");
         V.Log($"  前台漂移次数：{_focusDriftCount}（Q2，0 才是好消息）");
