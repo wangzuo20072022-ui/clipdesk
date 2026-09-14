@@ -27,7 +27,27 @@ namespace S2Strip;
 internal static class Program
 {
     private const int ExitHotKeyId = 0x0C21;
-    private const int ClipboardDebounceMs = 100;
+
+    /// <summary>
+    /// 剪贴板事件去抖窗口（毫秒）。
+    ///
+    /// ★ 第一轮是 **100ms，这是错的，而且正是"复制的东西不显示"的共犯之一。**
+    ///
+    ///   写入方（记事本 / 浏览器）写剪贴板是**分两步**的：
+    ///   先 EmptyClipboard，再 SetClipboardData。
+    ///   中间那个瞬间会触发一次 WM_CLIPBOARDUPDATE ——
+    ///   而**第一个事件恰恰是唯一一次"格式已就位、内容已填好"的通知**。
+    ///   我们把它整个丢掉，剩下的全是半成品状态。
+    ///
+    ///   实测（独立探针抓的现场）：
+    ///       事件#1 序列号=1546 → ✅ 读到内容 尝试1次     ← 被 100ms 去抖丢了
+    ///       事件#2 序列号=1549 → ★ 格式不在            ← 只有这个被处理
+    ///       事件#3 第1次尝试：OpenClipboard 失败 err=5
+    ///       事件#4 序列号=1556 → ✅ 读到内容 尝试2次
+    ///
+    ///   改成 20ms —— 够挡住真正的重复通知，又不会把第一次通知丢掉。
+    /// </summary>
+    private const int ClipboardDebounceMs = 20;
 
     /// <summary>收起态轮询频率：20Hz。只在等鼠标靠近，不用太勤。</summary>
     private const int PollIdleMs = 50;

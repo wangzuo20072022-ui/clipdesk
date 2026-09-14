@@ -230,6 +230,14 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", SetLastError = true)]
     internal static extern bool GlobalUnlock(IntPtr hMem);
 
+    /// <summary>
+    /// 这块全局内存有多大（字节）。
+    /// 用来确认"读到的东西不是空的" —— 剪贴板的写入方是分两步交接的，
+    /// 中间态会拿到一个存在但为空的句柄。
+    /// </summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern uint GlobalSize(IntPtr hMem);
+
     internal const uint GMEM_MOVEABLE = 0x0002;
     internal const uint CF_UNICODETEXT = 13;
 

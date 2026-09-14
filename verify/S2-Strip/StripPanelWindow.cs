@@ -36,23 +36,34 @@ namespace S2Strip;
 /// </summary>
 internal sealed class StripPanelWindow : Window
 {
+    /// <summary>面板底色（深色）。面板里是白字，深底没法避免。</summary>
     private static readonly Color PanelBg = Color.FromRgb(0x1C, 0x1C, 0x1C);
 
     /// <summary>
-    /// 条子颜色。
+    /// 条子的颜色。
     ///
-    /// ★ 用户明确要求「条子颜色调亮一点，不然在黑色背景下看不清」。
-    ///   第一轮用的 0x8A8A8A 在深色壁纸/深色窗口上确实糊成一片。
-    ///   现在用接近白的浅灰，并在下面垫一层柔和的发光边框，
-    ///   保证不管背景是什么颜色都看得见。
+    /// ★ 试了三轮才想明白：**任何单一颜色都会在某个背景上消失。**
+    ///   第一轮 0x8A8A8A（中灰）→ 深色壁纸上看不见
+    ///   第二轮 0xF0F0F0（近白）→ 浅色壁纸上看不见   ← 用户的原话
+    ///
+    ///   正解不是换一个"更好的颜色"，而是**让条子自己带对比**：
+    ///   外层一圈深色描边 + 中间一条亮色芯。
+    ///   于是它在白底上靠深色描边被看见，在黑底上靠亮色芯被看见。
+    ///
+    ///   这和 Google/YouTube 的"白底上放白色图标"是同一招数 ——
+    ///   他们也是靠一圈阴影/描边让白图标在白底上仍然可见。
     /// </summary>
-    private static readonly Color StripBg = Color.FromRgb(0xF0, 0xF0, 0xF0);
-    private static readonly Color StripGlow = Color.FromRgb(0x66, 0x66, 0x66);
+    /// <summary>条子的亮芯颜色。深色描边见 StripEdge。</summary>
+    private static readonly Color StripCore = Color.FromRgb(0xE8, 0xE8, 0xE8);   // 亮芯
+    private static readonly Color StripEdge = Color.FromRgb(0x18, 0x18, 0x18);   // 深色描边
 
-    private static readonly Color RowBg = Color.FromRgb(0x2A, 0x2A, 0x2A);
-    private static readonly Color RowHover = Color.FromRgb(0x3D, 0x3D, 0x3D);
+    private static readonly Color RowBg = Color.FromRgb(0x2E, 0x2E, 0x2E);
+    private static readonly Color RowHover = Color.FromRgb(0x42, 0x4A, 0x56);
     private static readonly Color RowBorder = Color.FromRgb(0x3A, 0x3A, 0x3A);
     private static readonly Color Accent = Color.FromRgb(0x8C, 0xD0, 0xFF);
+    private static readonly Color TitleBg = Color.FromRgb(0x25, 0x2A, 0x33);
+    private static readonly Color TimeFg = Color.FromRgb(0x9A, 0x9A, 0x9A);
+    private static readonly Color HintFg = Color.FromRgb(0xB0, 0xB0, 0xB0);
 
     /// <summary>
     /// 滚轮一步滚多少 DIP。
@@ -89,7 +100,6 @@ internal sealed class StripPanelWindow : Window
     // ── 视觉元素 ───────────────────────────────────────────────────
     private Border _panel = null!;
     private Border _strip = null!;
-    private Border _stripGlow = null!;
     private ScrollViewer _scroll = null!;
     private StackPanel _list = null!;
     private TextBlock _title = null!;
@@ -152,9 +162,9 @@ internal sealed class StripPanelWindow : Window
         Grid.SetRow(_scroll, 1);
         pane.Children.Add(_scroll);
 
-        // ② 条子：**尺寸全部写死**，居中铺满窗口。
+        // ② 条子：深色底 + 中间一条亮芯，靠"自带对比"在任何背景上都看得见。
         //
-        // ★ 第一轮"条子长度不对"的根因就在这里：
+        // ★ 第一轮"条子长度不对"的根因在这里：
         //   我只设了 HorizontalAlignment = Right，**没设 Width**。
         //   Right 对齐 + 无 Width + 无内容 → 期望宽度是 0，
         //   实际画多宽完全取决于容器怎么摆 —— 于是量出来只有 0.7cm。
@@ -162,21 +172,26 @@ internal sealed class StripPanelWindow : Window
         //   这是同一个错误的第三次（文字那次是 TextBlock 没定宽把布局撑坏）。
         //   **规矩：可见元素的宽高一律显式写死，不靠对齐方式推断。**
         //
-        //   现在窗口尺寸 == 条子尺寸，所以条子直接铺满窗口就行，
-        //   Width/Height 绑到窗口的实际尺寸上（在 ApplyBounds 里同步）。
-        _stripGlow = new Border
-        {
-            Background = new SolidColorBrush(StripGlow),
-            Visibility = Visibility.Collapsed,   // 展开时隐藏，免得在面板顶部留一道浅边
-        };
-        root.Children.Add(_stripGlow);
-
+        //   现在窗口尺寸 == 条子尺寸，外层 Border 直接铺满窗口，
+        //   亮芯用 Padding 缩进去 —— 深色部分就成了描边。
+        //
+        // ★ 关于"描边要多粗"：第一轮两侧各 0.67mm 时用户量出厚度只有 1.5mm
+        //   （目标 2mm）—— 但那次条子长度也是 1.5cm（目标 2cm），
+        //   **长宽同比例短 25%**，说明那是全局密度偏差，不是描边吃掉了厚度。
+        //   所以描边改为只在**上下各留 1 个物理像素**的视觉描边，
+        //   剩下的全部给亮芯 —— 厚度全归可见部分。
+        double edgePx = 1.0 / _scale;      // 1 物理像素对应的 DIP
         _strip = new Border
         {
-            Background = new SolidColorBrush(StripBg),
+            Background = new SolidColorBrush(StripEdge),   // 深色描边
+            Padding = new Thickness(0, edgePx, 0, edgePx),
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
             Cursor = Cursors.Hand,
+            Child = new Border
+            {
+                Background = new SolidColorBrush(StripCore),   // 亮芯
+            },
         };
         root.Children.Add(_strip);
 
@@ -518,7 +533,6 @@ internal sealed class StripPanelWindow : Window
 
         _expanded = false;
         _panel.Visibility = Visibility.Collapsed;
-        _stripGlow.Visibility = Visibility.Collapsed;
         _strip.Visibility = Visibility.Visible;
 
         int wPx = Geometry.DipToPx(Geometry.CollapsedWidthDip, _scale);
