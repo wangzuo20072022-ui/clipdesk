@@ -68,16 +68,18 @@ internal sealed class GridWindow : Window
     // 做法：每帧把位移**累计**起来，攒够 MoveThreshold 就用累计方向重判一次，
     //      然后清零重新攒。判断逻辑全在 GridSelection.Resolve 里（纯函数、可单测）。
 
-    /// <summary>上一次判定出来的方位，用来在光标不动时保持住。-1 = 还没选过。</summary>
+    /// <summary>上一次判定出来的方位。-1 = 还没动过（松手就是取消）。</summary>
     private int _lastDirection = -1;
 
-    /// <summary>自上次判定以来累计的移动量（物理像素）</summary>
-    private double _accX;
-    private double _accY;
-
-    /// <summary>上一帧的光标位置（算帧间位移用）</summary>
-    private int _prevX;
-    private int _prevY;
+    /// <summary>
+    /// 判定锚点（物理像素）—— **上一次判出方向时的光标位置**。
+    ///
+    /// 每次都看光标相对这个锚点位移了多少，
+    /// 所以"往上划→01、往下划→21、再往上划→又回 01"是自然成立的。
+    /// 锚点在每次判定出方向后挪到当前光标位置。
+    /// </summary>
+    private int _anchorX;
+    private int _anchorY;
 
     /// <summary>格子边长（物理像素）—— 显示时按 DPI 算</summary>
     private int _cellPx;
@@ -278,10 +280,8 @@ internal sealed class GridWindow : Window
         //   上一次按 Alt+V 选过什么、手划过多少，都不能带到这一次来。
         //   忘了清的话，会出现"刚弹出就已经选中了 21"这种莫名其妙的现象。
         _lastDirection = -1;
-        _accX = 0;
-        _accY = 0;
-        _prevX = cursor.X;
-        _prevY = cursor.Y;
+        _anchorX = cursor.X;
+        _anchorY = cursor.Y;
 
         HideCursor();
 
@@ -312,38 +312,30 @@ internal sealed class GridWindow : Window
         }
 
         GetCursorPos(out POINT p);
-        double dx = p.X - _originX;
-        double dy = p.Y - _originY;
 
-        // 累计这一帧的移动量（用来判"正在往哪个方向划"）
-        _accX += p.X - _prevX;
-        _accY += p.Y - _prevY;
-        _prevX = p.X;
-        _prevY = p.Y;
+        var r = GridSelection.Resolve(p.X - _anchorX, p.Y - _anchorY, _lastDirection);
 
-        int index = GridSelection.Resolve(dx, dy, _accX, _accY, _lastDirection);
-
-        // 判定生效了就把累计清零，重新攒下一次
-        if (index >= 0)
+        // ★ 按移动方向判出来的时候，把锚点挪到当前光标 ——
+        //   "这一小段移动已经用掉了"。下一次再判就要重新位移够阈值。
+        if (r.ConsumedMotion)
         {
-            _lastDirection = index;
-            _accX = 0;
-            _accY = 0;
+            _anchorX = p.X;
+            _anchorY = p.Y;
         }
 
-        if (index == _activeIndex) return;
+        if (r.Index >= 0) _lastDirection = r.Index;
 
-        SetActive(index);
+        if (r.Index == _activeIndex) return;
+
+        SetActive(r.Index);
     }
 
     public int CommitSelection() => _activeIndex;
 
-    /// <summary>Esc 取消 —— 强制清掉选中状态，回到"未选过"</summary>
+    /// <summary>Esc 取消 —— 强制清掉选中状态，回到"未动过"</summary>
     public void CancelSelection()
     {
         _lastDirection = -1;
-        _accX = 0;
-        _accY = 0;
         ClearActive();
     }
 

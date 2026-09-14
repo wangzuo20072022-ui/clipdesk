@@ -19,61 +19,54 @@ internal static class GridSelectionTests
         Console.WriteLine();
         Console.WriteLine("── GridSelection 自测 ────────────────────────────");
 
-        // ① 八个方位各来一发（距离 100px，远离死区）
-        //    参数顺序：Check(名字, 期望宫格号, dx, dy)
-        Check("正上 (0,-100)", 0, 0, -100);
-        Check("右上 (100,-100)", 1, 100, -100);
-        Check("正右 (100,0)", 2, 100, 0);
-        Check("右下 (100,100)", 3, 100, 100);
-        Check("正下 (0,100)", 4, 0, 100);
-        Check("左下 (-100,100)", 5, -100, 100);
-        Check("正左 (-100,0)", 6, -100, 0);
-        Check("左上 (-100,-100)", 7, -100, -100);
+        // ① 八个方位各来一发（位移 100px）
+        //    参数顺序：Check(名字, 期望宫格号, 位移 dx, 位移 dy)
+        Check("往上划 (0,-100)", 0, 0, -100);
+        Check("往右上划 (100,-100)", 1, 100, -100);
+        Check("往右划 (100,0)", 2, 100, 0);
+        Check("往右下划 (100,100)", 3, 100, 100);
+        Check("往下划 (0,100)", 4, 0, 100);
+        Check("往左下划 (-100,100)", 5, -100, 100);
+        Check("往左划 (-100,0)", 6, -100, 0);
+        Check("往左上划 (-100,-100)", 7, -100, -100);
 
-        // ② 中心死区（已缩到 12px）—— 没选过任何方向时，在这儿就是取消
+        // ② 没动 / 动得不够 → 取消；动够了 → 有效
         Check("原地不动 (0,0)", -1, 0, 0);
-        Check("微动 (8,8) 死区内", -1, 8, 8);
-        Check("刚出死区 (0,13) 有效", 4, 0, 13);
+        Check("微动 (6,6) 不够阈值", -1, 6, 6);
+        Check("刚够阈值往下 (0,10)", 4, 0, 10);
 
-        // ③ 扇区边界：正上扇区的边界在 ±22.5°
-        //    22° 偏右 → 仍在"正上"扇区
+        // ③ 扇区边界：往上扇区的边界在 ±22.5°
         Check("偏右 22° (38,-94)", 0, 38, -94);
-        //    23° 偏右 → 进"右上"扇区
         Check("偏右 23° (39,-92)", 1, 39, -92);
 
-        // ④ 距离不影响方位（只要出了死区）
-        Check("极远正下 (0,9999)", 4, 0, 9999);
-        Check("刚出死区正下 (0,25)", 4, 0, 25);
+        // ④ 距离不影响方向
+        Check("极远往下 (0,9999)", 4, 0, 9999);
+        Check("刚好往下 (0,25)", 4, 0, 25);
 
-        // ⑥ 中心格 (1,1) 不应该映射到任何宫格
+        // ⑤ 中心格 (1,1) 不应该映射到任何宫格
         int center = GridSelection.FromCell(1, 1);
         Report("中心格 (1,1) → -1", center == -1, $"实际 {center}");
 
-        // ⑦ 第三轮：锁定 —— 选过方向之后，死区里不再回到"取消"
-        CheckMove("移动过 → 死区内保持 21（不取消）", 4, 0, 0, 0, 20, last: 4);
-        CheckMove("移动过 → 死区内保持 01（不取消）", 0, 0, 0, 0, -20, last: 0);
-        CheckMove("没选过 → 死区内仍是取消", -1, 0, 0, 0, 0, last: -1);
-
-        // ⑧ 第三轮：运动方向 —— 用户的核心诉求
+        // ══ ⑥ 第四轮核心：这是一台"拨盘"，看的是**正在往哪边划** ══
         //
-        //   场景：鼠标本来在上方远处选中了 01，
-        //         现在**往下划一点点**。
-        //   位移累计是往下 15px，于是判出 正下 = 21。
-        CheckMove("从 01 往下划一点 → 立刻变 21", 4, 0, -100, 0, 15, last: 0);
-        CheckMove("从 01 往右划 → 变 12", 2, -50, -100, 20, 0, last: 0);
-        CheckMove("从 21 往上划 → 变 01", 0, 0, 80, 0, -15, last: 4);
+        // 用户的原话与考题：
+        //   「你往上拖选择了 01，往下拖一点就选择了 21，
+        //     但是如果**再往上拖，它应该立马回到 01**，因为往上拖动了。」
+        //   「当用户选择了 01，此时鼠标往右移动了一小段，此时选择的应该是哪个区块？」
 
-        // ⑨ 第三轮：累计不够、但鼠标已离起点很远 → 保持（不按方位跳回去）
-        //
-        //   这是"往下划一下选中 21、手一停"的场景：
-        //   累计<阈值，而鼠标仍在起点上方（dy=-80）。
-        //   ★ 如果这里按方位重算就会啪地跳回 01 —— 那更糟。必须保持。
-        CheckMove("划完停住不动 → 保持 21（不跳回 01）", 4, 0, -80, 3, 3, last: 4);
+        CheckMove("往下划一点（从 01）→ 21", 4, 0, 30, last: 0);
+        CheckMove("再往上划一点 → 立刻回到 01", 0, 0, -30, last: 4);
+        CheckMove("★ 用户考题：从 01 往右划一点 → 12", 2, 30, 0, last: 0);
+        CheckMove("从 01 往左划一点 → 10", 6, -30, 0, last: 0);
+        CheckMove("从 21 往右划一点 → 12", 2, 30, 0, last: 4);
+        CheckMove("从 12 往上划一点 → 01", 0, 0, -30, last: 2);
 
-        // ⑩ 抖动抵不过阈值：来回抖 5px 不足以换格
-        CheckMove("小幅抖动 → 保持原选", 4, 0, -30, 5, 5, last: 4);
+        // ⑦ 动得不够阈值 → 保持上一次，不换也不取消
+        CheckMove("位移不够阈值 → 保持 21", 4, 0, 5, last: 4);
+        CheckMove("位移不够且没选过 → 仍是取消", -1, 0, 5, last: -1);
+        CheckMove("★ 来回抖动净位移小 → 保持原选（不会疯跳）", 4, 6, 6, last: 4);
 
-        // ⑪ 坐标映射自洽
+        // ⑧ 坐标映射自洽
         CheckCell("0 → 01", 0, 0, 1);
         CheckCell("4 → 21", 4, 2, 1);
         CheckCell("7 → 00", 7, 0, 0);
@@ -83,22 +76,23 @@ internal static class GridSelectionTests
         Console.WriteLine("──────────────────────────────────────────────────");
     }
 
-    private static void Check(string name, int expected, double dx, double dy)
+    /// <summary>不带"上次方位"的检查（等价于"还没动过"）</summary>
+    private static void Check(string name, int expected, double moveX, double moveY)
     {
-        int actual = GridSelection.Resolve(dx, dy, dx, dy, -1);
+        var r = GridSelection.Resolve(moveX, moveY, -1);
         Report($"{name} → {(expected < 0 ? "取消" : GridSelection.Label(expected))}",
-               actual == expected,
-               actual == expected ? "" : $"实际得到 {(actual < 0 ? "取消" : GridSelection.Label(actual))}");
+               r.Index == expected,
+               r.Index == expected ? "" : $"实际得到 {(r.Index < 0 ? "取消" : GridSelection.Label(r.Index))}");
     }
 
-    /// <summary>带"累计移动量"和"上次方位"的检查 —— 第三轮的手感规则全靠它</summary>
+    /// <summary>带"上次方位"的检查 —— 拨盘的核心规则全靠它</summary>
     private static void CheckMove(string name, int expected,
-                                  double dx, double dy, double accX, double accY, int last)
+                                  double moveX, double moveY, int last)
     {
-        int actual = GridSelection.Resolve(dx, dy, accX, accY, last);
+        var r = GridSelection.Resolve(moveX, moveY, last);
         Report($"{name} → {(expected < 0 ? "取消" : GridSelection.Label(expected))}",
-               actual == expected,
-               actual == expected ? "" : $"实际得到 {(actual < 0 ? "取消" : GridSelection.Label(actual))}");
+               r.Index == expected,
+               r.Index == expected ? "" : $"实际得到 {(r.Index < 0 ? "取消" : GridSelection.Label(r.Index))}");
     }
 
     private static void CheckCell(string name, int index, int row, int col)
