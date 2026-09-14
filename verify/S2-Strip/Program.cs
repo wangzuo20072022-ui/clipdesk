@@ -100,6 +100,7 @@ internal static class Program
         EdgeTriggerTests.Run();
         HistoryPromoteTests.Run();
         GridSelectionTests.Run();
+        PathPlayerTests.Run();
 
         PrintHeader();
 

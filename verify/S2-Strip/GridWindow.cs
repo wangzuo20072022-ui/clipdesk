@@ -73,30 +73,15 @@ internal sealed class GridWindow : Window
     /// </summary>
     private int _lastIndex = -1;
 
-    // ── 轮盘高亮的"扫过去"播放器 ───────────────────────────────────
-    //
-    // 用户反馈「扫太快了」：原来是一 tick 就把整条路径同步 foreach 走完，
-    // 60Hz 下几毫秒就全过去，眼睛根本跟不上，看起来还是"啪地跳"。
-    //
-    // 改成把路径排进队列，**每 tick 最多走一格、每格至少停 StepDwellMs**。
-    // 于是中间格真的会被看见，扫的动作才成立。
-
-    /// <summary>待逐格播放的路径（含终点，不含起点）</summary>
-    private readonly System.Collections.Generic.Queue<int> _pendingPath = new();
-
-    /// <summary>下一格最早什么时候可以播（毫秒节拍）</summary>
-    private DateTime _nextStepAt = DateTime.MinValue;
-
     /// <summary>
-    /// 路径上每一格至少停留多久（毫秒）。
+    /// 轮盘高亮的"逐格播放器"。
     ///
-    /// 60ms 是"看得清但又不拖沓"的经验值：
-    /// 走完半圈（4 格）约 240ms，比一次眨眼略长，眼睛能跟上一格一格地动。
-    /// 再小（30ms）就糊成一片，再大（120ms）会明显觉得高亮"粘"在鼠标后面。
-    ///
-    /// 队列本身有上限（见 PollSelection），所以再快的手也不会积压出长延迟。
+    /// 逻辑抽在 PathPlayer 里（纯逻辑、可单测），这里只负责把每一格画出来。
+    /// 抽出去的理由：用户反馈「扫太快了」，改成每格停 60ms 之后，
+    /// "到底停没停够"必须能用测试钉死，不能只靠肉眼 ——
+    /// 手感和算法混在一起调是最费时间的。
     /// </summary>
-    private const int StepDwellMs = 60;
+    private readonly PathPlayer _pathPlayer = new();
 
     /// <summary>格子边长（物理像素）—— 显示时按 DPI 算</summary>
     private int _cellPx;
@@ -289,18 +274,17 @@ internal sealed class GridWindow : Window
         SetWindowPos(_hwnd, HWND_TOPMOST, xPx, yPx, sidePx, sidePx,
                      SWP_NOACTIVATE | SWP_SHOWWINDOW);
 
-        // ★ 原点 = 按下那一刻的光标位置（物理像素）
+        // ★ 原点 = 按下那一刻的光标位置（物理像素）。
+        //   第四轮的关键认识：只记这一个**固定的圆心**，
+        //   不要记"起点/锚点"那类会移动的基准 —— 正确模型里根本没有起点这回事。
         _originX = cursor.X;
         _originY = cursor.Y;
 
         // ★ 每次弹出都要把"这一次的选择状态"清零 ——
-        //   上一次按 Alt+V 选过什么，都不能带到这一次来。
+        //   上一次按 Alt+V 选过什么、路径播到哪了，都不能带到这一次来。
         //   忘了清的话，会出现"刚弹出就已经选中了 21"这种莫名其妙的现象。
         _lastIndex = -1;
-        _pendingPath.Clear();
-        _nextStepAt = DateTime.MinValue;
-        _originX = cursor.X;
-        _originY = cursor.Y;
+        _pathPlayer.Clear();
 
         HideCursor();
 
@@ -313,7 +297,7 @@ internal sealed class GridWindow : Window
         if (_hwnd == IntPtr.Zero) return;
 
         // 还没播完的路径直接丢掉 —— 窗口都要关了，没必要再扫
-        _pendingPath.Clear();
+        _pathPlayer.Clear();
 
         ShowCursorBack();
         ShowWindow(_hwnd, SW_HIDE);
@@ -342,17 +326,15 @@ internal sealed class GridWindow : Window
             return;
         }
 
-        // ★ 先把队列里还没播完的中间格播掉 —— 每 tick 最多一格，
-        //   且每格至少停 StepDwellMs。正在播的时候**不采样**：
-        //   否则新采样会立刻改写目标，还没露面的中间格就又被跳过了。
-        if (_pendingPath.Count > 0)
+        // ★ 先把播放器里还没播完的中间格播掉。
+        //   播放期间**不采样** —— 否则新采样会立刻改写目标，
+        //   还没露面的中间格就又被跳过了，"扫过去"也就无从谈起。
+        if (_pathPlayer.IsPlaying)
         {
-            if (DateTime.Now >= _nextStepAt)
+            if (_pathPlayer.Tick() is int step)
             {
-                int step = _pendingPath.Dequeue();
                 SetActive(step);
-                _lastIndex = step;                 // "已经显示到这一格了"
-                _nextStepAt = DateTime.Now.AddMilliseconds(StepDwellMs);
+                _lastIndex = step;         // "已经显示到这一格了"
             }
             return;
         }
@@ -373,22 +355,13 @@ internal sealed class GridWindow : Window
 
         if (sampled == _lastIndex) return;   // 方位没变，什么都不用做
 
-        // ★ 路过：把从当前格到目标格之间要经过的每一格排进队列，
-        //   交给上面的播放器一格格播出去。高亮会**扫过去**。
-        foreach (int step in GridSelection.PathTo(_lastIndex, sampled))
-        {
-            _pendingPath.Enqueue(step);
-        }
-
-        // 队列太长就丢掉前面的。
-        // 用户快速来回晃时，不能让高亮在后面慢慢追 ——
-        // 最多积压一圈（8 格 = 480ms）就够看清了。
-        while (_pendingPath.Count > GridSelection.SelectableCount)
-        {
-            _pendingPath.Dequeue();
-        }
-
-        _nextStepAt = DateTime.MinValue;   // 第一格立刻可播，不等
+        // ★ 路过：把从当前格到目标格之间要经过的每一格交给播放器，
+        //   由它一格格播出去。高亮会**扫过去** —— 这就是"轮盘感"。
+        //
+        //   上限一圈（8 格）：用户快速来回晃时，不能让高亮在后面慢慢追。
+        //   播放器丢的是**队头**，队尾（用户最终目标）一定保得住。
+        _pathPlayer.Enqueue(GridSelection.PathTo(_lastIndex, sampled),
+                            GridSelection.SelectableCount);
     }
 
     public int CommitSelection() => _activeIndex;
@@ -397,7 +370,7 @@ internal sealed class GridWindow : Window
     public void CancelSelection()
     {
         _lastIndex = -1;
-        _pendingPath.Clear();
+        _pathPlayer.Clear();
         ClearActive();
     }
 
