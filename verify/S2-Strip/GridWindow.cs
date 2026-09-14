@@ -73,6 +73,31 @@ internal sealed class GridWindow : Window
     /// </summary>
     private int _lastIndex = -1;
 
+    // ── 轮盘高亮的"扫过去"播放器 ───────────────────────────────────
+    //
+    // 用户反馈「扫太快了」：原来是一 tick 就把整条路径同步 foreach 走完，
+    // 60Hz 下几毫秒就全过去，眼睛根本跟不上，看起来还是"啪地跳"。
+    //
+    // 改成把路径排进队列，**每 tick 最多走一格、每格至少停 StepDwellMs**。
+    // 于是中间格真的会被看见，扫的动作才成立。
+
+    /// <summary>待逐格播放的路径（含终点，不含起点）</summary>
+    private readonly System.Collections.Generic.Queue<int> _pendingPath = new();
+
+    /// <summary>下一格最早什么时候可以播（毫秒节拍）</summary>
+    private DateTime _nextStepAt = DateTime.MinValue;
+
+    /// <summary>
+    /// 路径上每一格至少停留多久（毫秒）。
+    ///
+    /// 60ms 是"看得清但又不拖沓"的经验值：
+    /// 走完半圈（4 格）约 240ms，比一次眨眼略长，眼睛能跟上一格一格地动。
+    /// 再小（30ms）就糊成一片，再大（120ms）会明显觉得高亮"粘"在鼠标后面。
+    ///
+    /// 队列本身有上限（见 PollSelection），所以再快的手也不会积压出长延迟。
+    /// </summary>
+    private const int StepDwellMs = 60;
+
     /// <summary>格子边长（物理像素）—— 显示时按 DPI 算</summary>
     private int _cellPx;
 
@@ -272,6 +297,8 @@ internal sealed class GridWindow : Window
         //   上一次按 Alt+V 选过什么，都不能带到这一次来。
         //   忘了清的话，会出现"刚弹出就已经选中了 21"这种莫名其妙的现象。
         _lastIndex = -1;
+        _pendingPath.Clear();
+        _nextStepAt = DateTime.MinValue;
         _originX = cursor.X;
         _originY = cursor.Y;
 
@@ -284,6 +311,10 @@ internal sealed class GridWindow : Window
     public void HideGrid()
     {
         if (_hwnd == IntPtr.Zero) return;
+
+        // 还没播完的路径直接丢掉 —— 窗口都要关了，没必要再扫
+        _pendingPath.Clear();
+
         ShowCursorBack();
         ShowWindow(_hwnd, SW_HIDE);
     }
@@ -311,6 +342,21 @@ internal sealed class GridWindow : Window
             return;
         }
 
+        // ★ 先把队列里还没播完的中间格播掉 —— 每 tick 最多一格，
+        //   且每格至少停 StepDwellMs。正在播的时候**不采样**：
+        //   否则新采样会立刻改写目标，还没露面的中间格就又被跳过了。
+        if (_pendingPath.Count > 0)
+        {
+            if (DateTime.Now >= _nextStepAt)
+            {
+                int step = _pendingPath.Dequeue();
+                SetActive(step);
+                _lastIndex = step;                 // "已经显示到这一格了"
+                _nextStepAt = DateTime.Now.AddMilliseconds(StepDwellMs);
+            }
+            return;
+        }
+
         GetCursorPos(out POINT p);
 
         int sampled = GridSelection.Sample(p.X - _originX, p.Y - _originY);
@@ -327,27 +373,22 @@ internal sealed class GridWindow : Window
 
         if (sampled == _lastIndex) return;   // 方位没变，什么都不用做
 
-        // ★ 路过：把从上一格到这一格之间要经过的每一格，依次点亮一遍
-        var path = GridSelection.PathTo(_lastIndex, sampled);
-
-        _lastIndex = sampled;
-
-        if (path.Count <= 1)
+        // ★ 路过：把从当前格到目标格之间要经过的每一格排进队列，
+        //   交给上面的播放器一格格播出去。高亮会**扫过去**。
+        foreach (int step in GridSelection.PathTo(_lastIndex, sampled))
         {
-            SetActive(sampled);
-            return;
+            _pendingPath.Enqueue(step);
         }
 
-        // 一次性把整条路径应用到视觉上。
-        //
-        // 这里是同步循环、不是逐帧动画 —— 因为轮询是 60Hz，
-        // 而人手划过去本来就只需要几十毫秒，逐帧反而会因为
-        // 采样太密而"每一格都停不住"，看着更糊。
-        // 同步扫一遍能让每一格至少被画一次，日志里也能看到完整路径。
-        foreach (int step in path)
+        // 队列太长就丢掉前面的。
+        // 用户快速来回晃时，不能让高亮在后面慢慢追 ——
+        // 最多积压一圈（8 格 = 480ms）就够看清了。
+        while (_pendingPath.Count > GridSelection.SelectableCount)
         {
-            SetActive(step);
+            _pendingPath.Dequeue();
         }
+
+        _nextStepAt = DateTime.MinValue;   // 第一格立刻可播，不等
     }
 
     public int CommitSelection() => _activeIndex;
@@ -356,6 +397,7 @@ internal sealed class GridWindow : Window
     public void CancelSelection()
     {
         _lastIndex = -1;
+        _pendingPath.Clear();
         ClearActive();
     }
 
