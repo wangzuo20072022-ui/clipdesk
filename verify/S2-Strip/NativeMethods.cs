@@ -82,6 +82,7 @@ internal static class NativeMethods
     // ── GetAsyncKeyState ────────────────────────────────────────────
     internal const int VK_LMENU = 0xA4;
     internal const int VK_RMENU = 0xA5;
+    internal const int VK_ESCAPE = 0x1B;
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct POINT

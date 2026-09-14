@@ -471,6 +471,26 @@ internal static class Program
                 // ── ① 九宫格：按着 Alt 就更新选中的方位，松开就结算 ──
                 //    这段和条子面板共用同一个循环，不用再开一个线程。
                 {
+                    // ★ Esc 取消 —— 第三轮加了"锁定"之后，这是**唯一**的取消手段：
+                    //   一旦选中过某个方向就再也回不到"取消"，
+                    //   想反悔只能按 Esc（这个交互 CLAUDE.md 里早就写了，之前一直没实现）。
+                    if (_gridVisible && (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0)
+                    {
+                        var g = _grid;
+                        if (g is not null)
+                        {
+                            g.Dispatcher.Invoke(() =>
+                            {
+                                g.CancelSelection();
+                                g.HideGrid();
+                            });
+                        }
+                        _gridVisible = false;
+                        _altDown = false;
+                        V.Log("[九宫格] Esc → 取消，不粘贴");
+                        continue;
+                    }
+
                     bool altHeld = (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0
                                 || (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
 

@@ -60,6 +60,25 @@ internal sealed class GridWindow : Window
 
     private int _activeIndex = -1;
 
+    // ── 第三轮：运动方向 + 锁定 ─────────────────────────────────────
+    //
+    // 用户反馈「鼠标只要移动过了，就不能再选中最中心的取消方块」，
+    // 而且「往下移动一点就直接选中 21」—— 按"正在往哪个方向划"判，不是按方位判。
+    //
+    // 做法：每帧把位移**累计**起来，攒够 MoveThreshold 就用累计方向重判一次，
+    //      然后清零重新攒。判断逻辑全在 GridSelection.Resolve 里（纯函数、可单测）。
+
+    /// <summary>上一次判定出来的方位，用来在光标不动时保持住。-1 = 还没选过。</summary>
+    private int _lastDirection = -1;
+
+    /// <summary>自上次判定以来累计的移动量（物理像素）</summary>
+    private double _accX;
+    private double _accY;
+
+    /// <summary>上一帧的光标位置（算帧间位移用）</summary>
+    private int _prevX;
+    private int _prevY;
+
     /// <summary>格子边长（物理像素）—— 显示时按 DPI 算</summary>
     private int _cellPx;
 
@@ -255,6 +274,15 @@ internal sealed class GridWindow : Window
         _originX = cursor.X;
         _originY = cursor.Y;
 
+        // ★ 每次弹出都要把"这一次的选择状态"清零 ——
+        //   上一次按 Alt+V 选过什么、手划过多少，都不能带到这一次来。
+        //   忘了清的话，会出现"刚弹出就已经选中了 21"这种莫名其妙的现象。
+        _lastDirection = -1;
+        _accX = 0;
+        _accY = 0;
+        _prevX = cursor.X;
+        _prevY = cursor.Y;
+
         HideCursor();
 
         _lastShown = $"物理({xPx},{yPx}) 边长{sidePx}px 格子{_cellPx}px 缩放{scale:0.##}× "
@@ -287,13 +315,37 @@ internal sealed class GridWindow : Window
         double dx = p.X - _originX;
         double dy = p.Y - _originY;
 
-        int index = GridSelection.Resolve(dx, dy);
+        // 累计这一帧的移动量（用来判"正在往哪个方向划"）
+        _accX += p.X - _prevX;
+        _accY += p.Y - _prevY;
+        _prevX = p.X;
+        _prevY = p.Y;
+
+        int index = GridSelection.Resolve(dx, dy, _accX, _accY, _lastDirection);
+
+        // 判定生效了就把累计清零，重新攒下一次
+        if (index >= 0)
+        {
+            _lastDirection = index;
+            _accX = 0;
+            _accY = 0;
+        }
+
         if (index == _activeIndex) return;
 
         SetActive(index);
     }
 
     public int CommitSelection() => _activeIndex;
+
+    /// <summary>Esc 取消 —— 强制清掉选中状态，回到"未选过"</summary>
+    public void CancelSelection()
+    {
+        _lastDirection = -1;
+        _accX = 0;
+        _accY = 0;
+        ClearActive();
+    }
 
     public string? GetCellContent(int row, int col)
     {
