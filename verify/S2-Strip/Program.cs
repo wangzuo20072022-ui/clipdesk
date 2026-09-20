@@ -100,7 +100,6 @@ internal static class Program
         EdgeTriggerTests.Run();
         HistoryPromoteTests.Run();
         GridSelectionTests.Run();
-        PathPlayerTests.Run();
 
         PrintHeader();
 
@@ -406,7 +405,6 @@ internal static class Program
             V.Log($"[九宫格] 松开 Alt → {label}，不粘贴");
             _grid.HideGrid();
             _gridVisible = false;
-            V.Log($"  {_grid.StepRateText}");
             return;
         }
 
@@ -415,12 +413,6 @@ internal static class Program
 
         _grid.HideGrid();
         _gridVisible = false;
-
-        // ★ 把**实测**节拍打出来。
-        //   调了三轮手感都是"我改数字、用户说没变化"，
-        //   因为真实节拍被轮询频率卡着，跟设的那个数不是一回事。
-        //   打出来就不用再猜了。
-        V.Log($"  {_grid.StepRateText}");
 
         if (string.IsNullOrEmpty(text))
         {

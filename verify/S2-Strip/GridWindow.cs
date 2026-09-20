@@ -55,33 +55,15 @@ internal sealed class GridWindow : Window
     private string _lastShown = "(还没显示过)";
 
     /// <summary>
-    /// 圆心（物理像素）—— 按下 Alt+V 那一刻的光标位置，**全程固定不动**。
+    /// 原点（物理像素）—— 按下 Alt+V 那一刻的鼠标位置，方向判定全程以它为基准。
     ///
-    /// ★ 第四轮的关键认识：只记一个固定的圆心，不要记"起点/锚点"那类会移动的基准。
-    ///   前三轮我一直在"起点"上做文章，而正确模型里根本没有起点这回事。
+    /// ★ 固定不动。方向判定看的永远是"鼠标相对**按下那一点**的位移"，
+    ///   不随鼠标移动而漂移。
     /// </summary>
     private int _originX;
     private int _originY;
 
     private int _activeIndex = -1;
-
-    /// <summary>
-    /// 上一次采到的格子。-1 = 还没动过（松手就是取消）。
-    ///
-    /// 用户要求「只要移动过了就不能选中心」，所以一旦它变成有效值，
-    /// 就再也不会回到 -1 —— 除非 Esc 或重新弹出。
-    /// </summary>
-    private int _lastIndex = -1;
-
-    /// <summary>
-    /// 轮盘高亮的"逐格播放器"。
-    ///
-    /// 逻辑抽在 PathPlayer 里（纯逻辑、可单测），这里只负责把每一格画出来。
-    /// 抽出去的理由：用户反馈「扫太快了」，改成每格停 60ms 之后，
-    /// "到底停没停够"必须能用测试钉死，不能只靠肉眼 ——
-    /// 手感和算法混在一起调是最费时间的。
-    /// </summary>
-    private readonly PathPlayer _pathPlayer = new();
 
     /// <summary>格子边长（物理像素）—— 显示时按 DPI 算</summary>
     private int _cellPx;
@@ -274,17 +256,9 @@ internal sealed class GridWindow : Window
         SetWindowPos(_hwnd, HWND_TOPMOST, xPx, yPx, sidePx, sidePx,
                      SWP_NOACTIVATE | SWP_SHOWWINDOW);
 
-        // ★ 原点 = 按下那一刻的光标位置（物理像素）。
-        //   第四轮的关键认识：只记这一个**固定的圆心**，
-        //   不要记"起点/锚点"那类会移动的基准 —— 正确模型里根本没有起点这回事。
+        // ★ 原点 = 按下那一刻的光标位置（物理像素）
         _originX = cursor.X;
         _originY = cursor.Y;
-
-        // ★ 每次弹出都要把"这一次的选择状态"清零 ——
-        //   上一次按 Alt+V 选过什么、路径播到哪了，都不能带到这一次来。
-        //   忘了清的话，会出现"刚弹出就已经选中了 21"这种莫名其妙的现象。
-        _lastIndex = -1;
-        _pathPlayer.Clear();
 
         HideCursor();
 
@@ -296,9 +270,6 @@ internal sealed class GridWindow : Window
     {
         if (_hwnd == IntPtr.Zero) return;
 
-        // 还没播完的路径直接丢掉 —— 窗口都要关了，没必要再扫
-        _pathPlayer.Clear();
-
         ShowCursorBack();
         ShowWindow(_hwnd, SW_HIDE);
     }
@@ -306,16 +277,12 @@ internal sealed class GridWindow : Window
     // ── 方向选择 ────────────────────────────────────────────────────
 
     /// <summary>
-    /// 由外部 60Hz 轮询调用：读鼠标位置 → 采样方位 → **逐格路过** → 更新高亮。
+    /// 由外部 60Hz 轮询调用：读鼠标位置 → 算方位 → 更新高亮。
+    /// 只在**选中格变了**时才碰 UI —— 这是 D9 那条省电规矩。
     ///
-    /// ★ 第四轮的核心：换格时不再"啪"地跳过去，而是把中间那些格子
-    ///   依次点亮一遍。高亮会**扫过去**，这就是用户要的"轮盘感"。
-    ///
-    ///   用户原话：「选到最左边的时候，再去选最右边，
-    ///   你必须根据鼠标的移动方向顺时针到最右边，或者逆时针到最右边。
-    ///   而你做的是跳过中间直接到最右边。」
-    ///
-    /// 省电：每 tick 只做纯数学，只有路径非空时才碰 UI（D9 那条规矩）。
+    /// ★ 就这么简单，不要再往这里加东西。
+    ///   前三轮在这里塞过"锁定""路过""逐格播放"，每一次用户都说变差了。
+    ///   用户唯一认可的就是这个：鼠标在哪个方位亮哪格，回中心就取消。
     /// </summary>
     public void PollSelection()
     {
@@ -326,81 +293,20 @@ internal sealed class GridWindow : Window
             return;
         }
 
-        // ★ 先把播放器里还没播完的中间格播掉。
-        //   播放期间**不采样** —— 否则新采样会立刻改写目标，
-        //   还没露面的中间格就又被跳过了，"扫过去"也就无从谈起。
-        if (_pathPlayer.IsPlaying)
-        {
-            if (_pathPlayer.Tick() is int step)
-            {
-                SetActive(step);
-                _lastIndex = step;         // "已经显示到这一格了"
-            }
-            return;
-        }
-
         GetCursorPos(out POINT p);
+        double dx = p.X - _originX;
+        double dy = p.Y - _originY;
 
-        int sampled = GridSelection.Sample(p.X - _originX, p.Y - _originY);
+        int index = GridSelection.Resolve(dx, dy);
+        if (index == _activeIndex) return;
 
-        // 死区里：
-        //   还没选过（_lastIndex < 0）→ 保持 -1（松手就是取消）
-        //   选过了                    → ★ 锁定，保持上一次，回不到取消
-        //   —— 用户明确要求「只要移动过了就不能选中心」
-        if (sampled < 0)
-        {
-            if (_lastIndex < 0 && _activeIndex != -1) SetActive(-1);
-            return;
-        }
-
-        if (sampled == _lastIndex) return;   // 方位没变，什么都不用做
-
-        // ★ 路过：把从当前格到目标格之间要经过的每一格交给播放器，
-        //   由它一格格播出去。高亮会**扫过去** —— 这就是"轮盘感"。
-        //
-        //   上限一圈（8 格）：用户快速来回晃时，不能让高亮在后面慢慢追。
-        //   播放器丢的是**队头**，队尾（用户最终目标）一定保得住。
-        var path = GridSelection.PathTo(_lastIndex, sampled);
-
-        if (path.Count == 0)
-        {
-            // ★ 第一次选中：_lastIndex 还是 -1，PathTo 没有起点可算，返回空。
-            //
-            //   这里**绝不能**交给播放器 —— 空路径排不进队列，播放器不启动，
-            //   于是 _lastIndex 永远停在 -1，一个格子都选不中。
-            //   （这就是"完全选择不了"的根因：抽 PathPlayer 时把
-            //     _lastIndex = sampled 这一行弄丢了，只剩播放器那条路径会更新它。）
-            //
-            //   第一次没有中间格要扫，直接落到目标格上。
-            _lastIndex = sampled;
-            SetActive(sampled);
-            return;
-        }
-
-        _pathPlayer.Enqueue(path, GridSelection.SelectableCount);
+        SetActive(index);
     }
 
     public int CommitSelection() => _activeIndex;
 
-    /// <summary>
-    /// 上一轮"扫过去"的实测节拍（毫秒/格），给日志用。
-    ///
-    /// 为什么需要它：手感调了三轮都是"我改个数字、用户说没变化" ——
-    /// 因为**真实节拍不等于设的那个数**，它被轮询频率卡着。
-    /// 把实测值打出来，下次就不用猜了。
-    /// </summary>
-    public string StepRateText => _pathPlayer.ObservedStepCount > 1
-        ? $"实测节拍 {_pathPlayer.ObservedStepMs:0.#}ms/格（{_pathPlayer.ObservedStepCount} 格），"
-          + $"设定值 {PathPlayer.StepDwellMs}ms"
-        : "（这一轮没扫过中间格）";
-
-    /// <summary>Esc 取消 —— 强制清掉选中状态，回到"未动过"</summary>
-    public void CancelSelection()
-    {
-        _lastIndex = -1;
-        _pathPlayer.Clear();
-        ClearActive();
-    }
+    /// <summary>Esc 取消 —— 清掉高亮（和"拖回中心"等价的一条捷径）</summary>
+    public void CancelSelection() => ClearActive();
 
     public string? GetCellContent(int row, int col)
     {
