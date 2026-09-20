@@ -20,22 +20,29 @@ internal sealed class PathPlayer
     /// <summary>
     /// 路径上每一格停留多久（毫秒）。
     ///
-    /// ── 这个数字调过三次，记下来免得再来回试 ──────────────────
+    /// ── 这个数字调过四次，记下来免得再来回试 ──────────────────
     ///
-    ///   第一版：0（一 tick 全走完）→ 用户「确实扫太快了」，
-    ///           60Hz 下几毫秒全过去，中间格根本没露面。
-    ///   第二版：60 → 用户「效果很差」，扫得太慢，高亮像粘在鼠标后面。
-    ///   第三版：**25** ← 现在这个。
+    ///   第一版：0（一 tick 全走完）→ 用户「确实扫太快了」
+    ///   第二版：60 → 用户「效果很差」，太慢
+    ///   第三版：25 → 用户「感觉跟没改一样」★
+    ///   第四版：**16** ← 现在这个
     ///
-    /// 25ms 的效果：走完半圈（4 格）约 75ms，比一次眨眼短，
-    /// 但明显能看出高亮是一格格挪过去的，不是"啪"地跳。
+    /// ★ 第三版"跟没改一样"不是错觉，也不是常量没生效 ——
+    ///   真正的瓶颈在**轮询频率**：当时九宫格开着的时候，
+    ///   轮询线程走的是"条子面板收起"那一档（50ms），
+    ///   所以实际节拍是 max(25, 50) = 50ms，改常量当然没用。
+    ///   修在 Program.cs 的 StartWatcher：九宫格开着时也走 16ms 那一档。
     ///
-    /// 上下界参考：
-    ///   · 不能低于 16ms（轮询周期）—— 否则"每 tick 一格"本身就限制了速度，
-    ///     再调小也没用，反而会让节拍和采样打架。
-    ///   · 超过 ~40ms 就会觉得高亮跟不上手。
+    /// ── 为什么是 16 ────────────────────────────────────────────
+    ///
+    ///   16ms 正好等于轮询周期，也就是**"每 tick 一格"** ——
+    ///   这是"逐格播放"这个机制能达到的最快速度，再小就没有意义了
+    ///   （下一个 tick 本来就要等 16ms）。
+    ///
+    ///   所以 16 是这套机制的上限，不是保守值。还想更快就得放弃逐格播放，
+    ///   退回"一 tick 直接跳到目标格" —— 那就没有扫过去的效果了。
     /// </summary>
-    public const int StepDwellMs = 25;
+    public const int StepDwellMs = 16;
 
     private readonly Func<DateTime> _now;
     private readonly Queue<int> _pending = new();
@@ -55,6 +62,25 @@ internal sealed class PathPlayer
 
     /// <summary>最近一次真正播出去的格子；-1 = 还没播过</summary>
     public int LastStep { get; private set; } = -1;
+
+    // ── 实测节拍 ────────────────────────────────────────────────────
+    //
+    // 为什么要有这个：手感调了三轮都是"我改了个数字，用户说没变化"，
+    // 因为**真实节拍并不等于 StepDwellMs** —— 它受轮询频率限制。
+    // 与其继续猜，不如把**实际测到的间隔**打出来。
+    //
+    // 用法：一轮播放结束后（Clear 之前）读一次，日志里就能看到
+    // "设的是 16ms，实际跑出来是 XXms"。
+
+    private DateTime _firstStepAt = DateTime.MinValue;
+    private DateTime _lastStepAt = DateTime.MinValue;
+    private int _stepCount;
+
+    /// <summary>上一轮播放里，相邻两格之间**实际**隔了多少毫秒。0 = 没测到。</summary>
+    public double ObservedStepMs { get; private set; }
+
+    /// <summary>上一轮播放一共走了几格</summary>
+    public int ObservedStepCount { get; private set; }
 
     /// <summary>
     /// 排入一条路径（含终点，不含起点）。
@@ -93,6 +119,12 @@ internal sealed class PathPlayer
         int step = _pending.Dequeue();
         LastStep = step;
         _nextStepAt = now.AddMilliseconds(StepDwellMs);
+
+        // 记录真实间隔（只在同一轮播放里算）
+        if (_stepCount == 0) _firstStepAt = now;
+        _lastStepAt = now;
+        _stepCount++;
+
         return step;
     }
 
@@ -100,8 +132,21 @@ internal sealed class PathPlayer
     /// 否则上一次的残留路径会在下次弹出时突然冒出来。</summary>
     public void Clear()
     {
+        // 结算这一轮的实测节拍，供日志用（Clear 之后 _stepCount 会归零）
+        if (_stepCount > 1)
+        {
+            ObservedStepCount = _stepCount;
+            ObservedStepMs = (_lastStepAt - _firstStepAt).TotalMilliseconds / (_stepCount - 1);
+        }
+        else
+        {
+            ObservedStepCount = _stepCount;
+            ObservedStepMs = 0;
+        }
+
         _pending.Clear();
         _nextStepAt = DateTime.MinValue;
         LastStep = -1;
+        _stepCount = 0;
     }
 }

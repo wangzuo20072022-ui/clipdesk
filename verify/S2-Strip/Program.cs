@@ -406,6 +406,7 @@ internal static class Program
             V.Log($"[九宫格] 松开 Alt → {label}，不粘贴");
             _grid.HideGrid();
             _gridVisible = false;
+            V.Log($"  {_grid.StepRateText}");
             return;
         }
 
@@ -414,6 +415,12 @@ internal static class Program
 
         _grid.HideGrid();
         _gridVisible = false;
+
+        // ★ 把**实测**节拍打出来。
+        //   调了三轮手感都是"我改数字、用户说没变化"，
+        //   因为真实节拍被轮询频率卡着，跟设的那个数不是一回事。
+        //   打出来就不用再猜了。
+        V.Log($"  {_grid.StepRateText}");
 
         if (string.IsNullOrEmpty(text))
         {
@@ -489,11 +496,27 @@ internal static class Program
         {
             while (true)
             {
-                var phase = Trigger.Current;
-                int sleep = phase == EdgeTriggerStateMachine.Phase.Expanded
-                            || phase == EdgeTriggerStateMachine.Phase.CollapsePending
-                    ? PollActiveMs
-                    : PollIdleMs;
+                // ★ 轮询频率取"两件事里更急的那一件"。
+                //
+                //   ★★ 这里有个把我坑惨的 bug（第四轮才发现）：
+                //
+                //   九宫格和条子面板**共用这一个线程**，但频率原来只看了
+                //   条子面板的状态机 Trigger.Current ——
+                //   而九宫格开着的时候，条子面板是收起状态（Idle），
+                //   于是线程走的是 50ms 那一档！
+                //
+                //   结果：我把九宫格逐格播放的节拍从 60ms 调到 25ms，
+                //   用户说"感觉跟没改一样" —— 因为实际节拍是 max(25, 50) = 50ms，
+                //   被轮询周期卡住了，改常量当然没用。
+                //
+                //   修法：九宫格开着时也走 16ms 那一档。
+                bool stripNeedsFastPoll =
+                    Trigger.Current == EdgeTriggerStateMachine.Phase.Expanded
+                    || Trigger.Current == EdgeTriggerStateMachine.Phase.CollapsePending;
+
+                int sleep = (_gridVisible || stripNeedsFastPoll)
+                    ? PollActiveMs      // 16ms —— 九宫格逐格播放的上限就是它
+                    : PollIdleMs;       // 50ms —— 平时等鼠标靠近，不用那么勤
 
                 Thread.Sleep(sleep);
 

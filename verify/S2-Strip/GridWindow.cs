@@ -382,6 +382,18 @@ internal sealed class GridWindow : Window
 
     public int CommitSelection() => _activeIndex;
 
+    /// <summary>
+    /// 上一轮"扫过去"的实测节拍（毫秒/格），给日志用。
+    ///
+    /// 为什么需要它：手感调了三轮都是"我改个数字、用户说没变化" ——
+    /// 因为**真实节拍不等于设的那个数**，它被轮询频率卡着。
+    /// 把实测值打出来，下次就不用猜了。
+    /// </summary>
+    public string StepRateText => _pathPlayer.ObservedStepCount > 1
+        ? $"实测节拍 {_pathPlayer.ObservedStepMs:0.#}ms/格（{_pathPlayer.ObservedStepCount} 格），"
+          + $"设定值 {PathPlayer.StepDwellMs}ms"
+        : "（这一轮没扫过中间格）";
+
     /// <summary>Esc 取消 —— 强制清掉选中状态，回到"未动过"</summary>
     public void CancelSelection()
     {
