@@ -360,8 +360,24 @@ internal sealed class GridWindow : Window
         //
         //   上限一圈（8 格）：用户快速来回晃时，不能让高亮在后面慢慢追。
         //   播放器丢的是**队头**，队尾（用户最终目标）一定保得住。
-        _pathPlayer.Enqueue(GridSelection.PathTo(_lastIndex, sampled),
-                            GridSelection.SelectableCount);
+        var path = GridSelection.PathTo(_lastIndex, sampled);
+
+        if (path.Count == 0)
+        {
+            // ★ 第一次选中：_lastIndex 还是 -1，PathTo 没有起点可算，返回空。
+            //
+            //   这里**绝不能**交给播放器 —— 空路径排不进队列，播放器不启动，
+            //   于是 _lastIndex 永远停在 -1，一个格子都选不中。
+            //   （这就是"完全选择不了"的根因：抽 PathPlayer 时把
+            //     _lastIndex = sampled 这一行弄丢了，只剩播放器那条路径会更新它。）
+            //
+            //   第一次没有中间格要扫，直接落到目标格上。
+            _lastIndex = sampled;
+            SetActive(sampled);
+            return;
+        }
+
+        _pathPlayer.Enqueue(path, GridSelection.SelectableCount);
     }
 
     public int CommitSelection() => _activeIndex;

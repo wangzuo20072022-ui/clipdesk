@@ -5,7 +5,7 @@ namespace S2Strip;
 /// <summary>
 /// PathPlayer 的自测 —— 节拍、边界、积压裁剪。
 ///
-/// 这一组测试存在的理由：用户说「扫太快了」，我改成每格停 60ms。
+/// 这一组测试存在的理由：用户说「扫太快了」，我给它加了个节拍。
 /// 但"改了之后到底停没停够"如果只靠肉眼，下次再调就又是盲调。
 /// 用注入时钟把这些数字钉死，以后改 StepDwellMs 立刻能看出影响。
 /// </summary>
@@ -34,20 +34,25 @@ internal static class PathPlayerTests
             var (p, clock) = Make();
             p.Enqueue(new[] { 1, 2, 3 }, 8);
             Check("排入后 IsPlaying=true", p.IsPlaying);
-            Check("第一格立刻播（不等 60ms）", p.Tick() == 1);
+            Check($"第一格立刻播（不等 {PathPlayer.StepDwellMs}ms）", p.Tick() == 1);
         }
 
-        // ③ 第二格必须等满 60ms
+        // ③ 第二格必须等满一个节拍
+        //
+        //   ★ 这里以前把 60 写死在断言和文字里，结果把 StepDwellMs 改成 25 之后
+        //     这两条立刻变红 —— 而代码是对的。**测试里不许再出现魔法数字**，
+        //     一律引用 StepDwellMs，这样调手感时测试不会跟着碎。
         {
             var (p, clock) = Make();
+            int step = PathPlayer.StepDwellMs;
             p.Enqueue(new[] { 1, 2 }, 8);
             p.Tick();                       // 播 1
 
-            clock.Advance(59);
-            Check("59ms 时第二格还不能播", p.Tick() is null);
+            clock.Advance(step - 1);
+            Check($"{step - 1}ms 时第二格还不能播", p.Tick() is null);
 
-            clock.Advance(1);               // 累计 60
-            Check("满 60ms 播第二格", p.Tick() == 2);
+            clock.Advance(1);               // 累计满一个节拍
+            Check($"满 {step}ms 播第二格", p.Tick() == 2);
         }
 
         // ④ 播完队列自然结束
@@ -62,7 +67,7 @@ internal static class PathPlayerTests
             Check("播完 Tick 返回 null", p.Tick() is null);
         }
 
-        // ⑤ ★ 核心：4 格的路径总耗时必须是 3 个节拍（180ms），不是 4 个
+        // ⑤ ★ 核心：4 格的路径总耗时必须是 3 个节拍，不是 4 个
         {
             var (p, clock) = Make();
             p.Enqueue(new[] { 1, 2, 3, 4 }, 8);
@@ -76,16 +81,24 @@ internal static class PathPlayerTests
             }
 
             double elapsed = (clock.Now - start).TotalMilliseconds;
-            Check($"4 格走完耗时 {(int)elapsed}ms（应为 180）",
+            Check($"4 格走完耗时 {(int)elapsed}ms（应为 {PathPlayer.StepDwellMs * 3}）",
                   Math.Abs(elapsed - PathPlayer.StepDwellMs * 3) < 0.5);
         }
 
-        // ⑥ 半圈（4 格）要看得清：至少 180ms，别快过这个
+        // ⑥ 节拍必须落在"看得见"和"跟得上"之间
+        //
+        //   ★ 这条以前写的是「≥180ms」，那是第二版（60ms）时的需求。
+        //     用户后来反馈「扫得太慢」，改成 25ms —— 需求变了，断言也得跟着变。
+        //     所以这里改成**区间**判断，把上界也管住：
+        //     光有下界的话，我把它调回 200ms 测试照样绿，但手感已经废了。
         {
-            var (p, _) = Make();
-            p.Enqueue(new[] { 1, 2, 3, 4 }, 8);
-            Check("半圈路径 4 格 → 总时长 ≥180ms",
-                  PathPlayer.StepDwellMs * 3 >= 180);
+            int ms = PathPlayer.StepDwellMs;
+            Check($"节拍 {ms}ms 在 [16, 40] 区间内（看得见 + 跟得上）",
+                  ms >= 16 && ms <= 40);
+
+            // 至少要比一个轮询周期长，否则"每 tick 一格"本身就是瓶颈，
+            // 这个常数怎么调都不起作用
+            Check("节拍 ≥ 轮询周期 16ms（否则节拍形同虚设）", ms >= 16);
         }
 
         // ⑦ 积压裁剪：从队头丢，队尾（用户最终目标）必须保住

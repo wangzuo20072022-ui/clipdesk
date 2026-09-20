@@ -12,25 +12,59 @@ namespace S2Strip;
 ///   而不是"谁最后调了 SetCursor"。
 ///   我们的九宫格是 WS_EX_NOACTIVATE + WS_EX_TOOLWINDOW —— **永远不是前台窗口**，
 ///   所以 SetCursor 设的是"我们自己的"光标，系统压根不用它。
-///   这就是为什么藏了两次都没效果。
 ///
-/// 正解是 SetSystemCursor：直接替换系统级的 OCR_NORMAL 光标资源。
+/// 正解是 SetSystemCursor：直接替换系统级的光标资源。
 /// 代价是**它是全局的** —— 改完整个系统都看不到指针了，
 /// 所以必须配套一套"无论如何都要还原"的保险。
 ///
-/// 三道保险：
+/// ══ 第五轮：为什么要换掉**一整组**光标，而不只是箭头 ═══════════
+///
+/// 用户反馈：「鼠标在一定范围外又显示了」。
+///
+/// 根因：九宫格窗口只有 720×720 物理像素，鼠标拖远就离开了我们的窗口，
+/// 落到**别的程序**的窗口上。那个程序（记事本、浏览器……）会给光标
+/// 设一个自己的样子 —— 而**我们只换了 OCR_NORMAL（标准箭头）**，
+/// 换不到它的 I 形光标 / 手形光标。于是指针又冒出来了。
+///
+/// 修法：把常见的那十几种系统光标**全部**换成透明的。
+/// 这样不管鼠标落在谁家的窗口上，它设出来的也是我们那张空白图。
+///
+/// 三道保险（还原）：
 ///   1. 每次收起九宫格时还原
 ///   2. 进程退出时还原（AppDomain.ProcessExit）
 ///   3. 一个看门狗定时器：万一程序崩了没还原，超时后强制还原
 /// </summary>
 internal static class CursorHider
 {
-    private static IntPtr _blankCursor;
     private static bool _hidden;
     private static System.Threading.Timer? _watchdog;
 
     /// <summary>藏了多久之后强制还原（毫秒）。防止程序异常时留下"没有鼠标"的系统。</summary>
     private const int WatchdogMs = 30_000;
+
+    /// <summary>
+    /// 要替换成空白的系统光标 id。
+    ///
+    /// 覆盖了箭头、文本 I 形、手形、十字、等待、各种缩放方向 ——
+    /// 也就是日常会遇到的全部。少一个，鼠标经过对应控件时就会露馅。
+    /// </summary>
+    private static readonly uint[] CursorsToBlank =
+    {
+        32512,   // OCR_NORMAL      标准箭头
+        32513,   // OCR_IBEAM       文本输入（记事本正文）
+        32514,   // OCR_WAIT        忙
+        32515,   // OCR_CROSS       十字
+        32516,   // OCR_UP          向上
+        32642,   // OCR_SIZENWSE    左上/右下缩放
+        32643,   // OCR_SIZENESW    右上/左下缩放
+        32644,   // OCR_SIZEWE      左右缩放
+        32645,   // OCR_SIZENS      上下缩放
+        32646,   // OCR_SIZEALL     四向移动
+        32648,   // OCR_NO          禁止
+        32649,   // OCR_HAND        手形（链接、可点元素）
+        32650,   // OCR_APPSTARTING 后台忙
+        32651,   // OCR_HELP        帮助
+    };
 
     public static bool IsHidden => _hidden;
 
@@ -39,22 +73,31 @@ internal static class CursorHider
     {
         if (_hidden) return "已经是隐藏状态";
 
-        _blankCursor = CreateBlank();
-        if (_blankCursor == IntPtr.Zero)
+        int ok = 0, fail = 0;
+
+        foreach (uint id in CursorsToBlank)
         {
-            return $"★ 造空光标失败（错误码 {Marshal.GetLastWin32Error()}）";
+            // ★ 每个 id 都要**单独**造一个空光标。
+            //   SetSystemCursor 会接管句柄的所有权（并在替换时销毁旧的），
+            //   同一个句柄给两个 id 用会导致其中一个失效。
+            IntPtr blank = CreateBlank();
+            if (blank == IntPtr.Zero) { fail++; continue; }
+
+            if (SetSystemCursor(blank, id)) ok++;
+            else fail++;
         }
 
-        // SetSystemCursor 会**接管**这个句柄；之后不能再 DestroyCursor 它，
-        // 要还原只能靠 SPI_SETCURSORS。
-        if (!SetSystemCursor(_blankCursor, OCR_NORMAL))
+        if (ok == 0)
         {
-            return $"★ SetSystemCursor 失败（错误码 {Marshal.GetLastWin32Error()}）";
+            return $"★ 全部失败（错误码 {Marshal.GetLastWin32Error()}）";
         }
 
         _hidden = true;
         ArmWatchdog();
-        return "已隐藏";
+
+        return fail == 0
+            ? $"已隐藏（{ok} 种光标全部替换）"
+            : $"已隐藏（{ok} 成功 / {fail} 失败）";
     }
 
     /// <summary>还原。可重复调用。</summary>
