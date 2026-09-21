@@ -39,6 +39,8 @@ internal static class NativeMethods
     internal const uint VK_V = 0x56;
     /// <summary>逃生热键用：Ctrl+Alt+Q</summary>
     internal const uint VK_Q = 0x51;
+    /// <summary>玻璃调参面板用：Ctrl+Alt+G</summary>
+    internal const uint VK_G = 0x47;
 
     // ── 窗口消息 ────────────────────────────────────────────────────
     internal const int WM_HOTKEY = 0x0312;
@@ -315,6 +317,144 @@ internal static class NativeMethods
 
     internal const uint GMEM_MOVEABLE = 0x0002;
     internal const uint CF_UNICODETEXT = 13;
+
+    // ── GDI 抓屏（玻璃材质用）───────────────────────────────────────
+    //
+    // 为什么需要抓屏：苹果的「液态玻璃」核心是**折射背景** —— 玻璃边缘
+    // 把背后的画面放大扭曲。浏览器里这是 backdrop-filter 干的活，
+    // WPF / Win32 **没有等价物**，所以只能自己把背景像素抓回来处理。
+    //
+    // 链路：GetDC(屏幕) → 兼容DC → 兼容位图 → BitBlt → GetDIBits → byte[]
+    //
+    // ★ 本进程是 PerMonitorV2（见 app.manifest），所以这里全部是**物理像素**，
+    //   和 GetCursorPos / SetWindowPos 用的是同一套坐标，不用换算。
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetDC(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    internal static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int width, int height);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr SelectObject(IntPtr hdc, IntPtr hObject);
+
+    [DllImport("gdi32.dll")]
+    internal static extern bool DeleteObject(IntPtr hObject);
+
+    [DllImport("gdi32.dll")]
+    internal static extern bool DeleteDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern bool BitBlt(IntPtr hdcDest, int xDest, int yDest,
+                                       int width, int height,
+                                       IntPtr hdcSrc, int xSrc, int ySrc, uint rop);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern int GetDIBits(IntPtr hdc, IntPtr hbm, uint start, uint lines,
+                                         byte[] bits, ref BITMAPINFO bmi, uint usage);
+
+    /// <summary>
+    /// 带缩放的块传送 —— **抓屏时顺手降采样**。
+    ///
+    /// 为什么不先抓全尺寸再自己降：抓 720×720 要传 2MB 像素，实测 15.5ms；
+    /// 直接抓到 180×180 只传 130KB，快一个数量级。
+    /// 反正下一步就是模糊，本来也不需要全分辨率。
+    ///
+    /// ★ 必须配 <see cref="SetStretchBltMode"/> = HALFTONE，
+    ///   否则缩小的时候是**最近邻抽样**（丢掉大部分像素），
+    ///   画面会出现明显的锯齿和摩尔纹。
+    /// </summary>
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern bool StretchBlt(IntPtr hdcDest, int xDest, int yDest,
+                                           int wDest, int hDest,
+                                           IntPtr hdcSrc, int xSrc, int ySrc,
+                                           int wSrc, int hSrc, uint rop);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern int SetStretchBltMode(IntPtr hdc, int mode);
+
+    /// <summary>缩放时做平均（比默认的 COLORONCOLOR 好看得多）</summary>
+    internal const int HALFTONE = 4;
+
+    /// <summary>
+    /// 建一块**可以直接读写的** DIB（设备无关位图）。
+    ///
+    /// ★ 为什么不用 CreateCompatibleBitmap + GetDIBits：
+    ///   实测 GetDIBits 那一趟往返很贵（驱动层拷贝），而整条抓屏链路
+    ///   的固定开销本来就有 8ms 左右。
+    ///   CreateDIBSection 直接把位图内存的指针交给我们（ppvBits），
+    ///   BitBlt 画完就能直接读 —— **省掉整趟 GetDIBits**。
+    ///
+    /// 用完要 DeleteObject 释放，但 ppvBits 那块内存由 GDI 管理，
+    /// 不能自己 free。
+    /// </summary>
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern IntPtr CreateDIBSection(IntPtr hdc, ref BITMAPINFO pbmi,
+                                                   uint usage, out IntPtr ppvBits,
+                                                   IntPtr hSection, uint offset);
+
+    /// <summary>直接拷贝源像素</summary>
+    internal const uint SRCCOPY = 0x00CC0020;
+
+    /// <summary>
+    /// ★ 把**分层窗口**也一起抓进来。
+    ///
+    /// 不加这个标志，BitBlt 会漏掉 WS_EX_LAYERED 的窗口（很多现代应用
+    /// 和所有 WPF 透明窗口都是），抓出来的背景会有空洞。
+    /// </summary>
+    internal const uint CAPTUREBLT = 0x40000000;
+
+    internal const uint BI_RGB = 0;
+    internal const uint DIB_RGB_COLORS = 0;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BITMAPINFOHEADER
+    {
+        public uint biSize;
+        public int biWidth;
+        public int biHeight;
+        public ushort biPlanes;
+        public ushort biBitCount;
+        public uint biCompression;
+        public uint biSizeImage;
+        public int biXPelsPerMeter;
+        public int biYPelsPerMeter;
+        public uint biClrUsed;
+        public uint biClrImportant;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BITMAPINFO
+    {
+        public BITMAPINFOHEADER bmiHeader;
+        public uint bmiColors;
+    }
+
+    /// <summary>
+    /// 让窗口**对抓屏不可见**，但人眼照样看得见。
+    ///
+    /// 用途：触发条是常驻显示的，抓它背后的画面时会把**它自己**抓进去，
+    /// 那样玻璃层就会糊住自己上一帧的样子，越叠越脏。
+    /// 加上这个之后 BitBlt 返回的是它背后真正的桌面内容。
+    ///
+    /// ⚠️ **副作用**：用户自己截图时，触发条也不会出现。
+    ///    这是 Win10 2004+ 才有的值。
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
+    internal const uint WDA_NONE = 0x00000000;
+    internal const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+
+    /// <summary>屏幕尺寸（物理像素）。0 = 宽，1 = 高。</summary>
+    [DllImport("user32.dll")]
+    internal static extern int GetSystemMetrics(int nIndex);
 
     // ── 小工具 ─────────────────────────────────────────────────────
     internal static string GetWindowTitle(IntPtr hWnd)

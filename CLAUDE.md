@@ -258,7 +258,44 @@
 
 ---
 
-## 二、硬约束（不可违反）
+## 材质规格（2026-09-21 起）
+
+功能层已经定稿，现在进入视觉层。用户选择：**所有界面都上玻璃**，但先从
+「模糊 + 高光描边 + 内发光 + 圆角」的简化版开始，折射 / 色散默认关闭；
+通过 `Ctrl+Alt+G` 打开实时滑块面板，满意后保存到 `out/glass.json`。
+
+### 三个界面
+
+- `GridWindow`（Alt+V 九宫格）：弹出前抓一次背景，玻璃图层垫在半透明格子下面
+- `StripPanelWindow` 收起态条子：启动 / 收起时抓一次；151×15px 很小，不做每帧刷新
+- `StripPanelWindow` 展开态面板：展开前抓一次，面板尺寸变化后按新尺寸重抓
+
+### 硬约束
+
+1. **不得改动已经定稿的交互**：九宫格位置、死区取消、Alt+V、粘贴顶置都不能因材质改动
+2. **不得使用 `AllowsTransparency=true`**：这会给 WPF HWND 加 `WS_EX_LAYERED`，和 DWM / 非分层材质冲突
+3. **不得每帧抓屏**：抓屏实测有约 4.3ms 固定开销；静止时不能用它持续唤醒渲染
+4. **不得用 `DispatcherTimer`**：沿用后台轮询线程；材质只在窗口出现或前台窗口变化时更新
+5. **抓屏必须在窗口显示前完成**，否则会抓到自己，产生递归脏影
+6. 调参面板用 `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` 隐身于抓屏；用户截图时该面板也不会出现，这是已知副作用
+7. 玻璃失败必须退回纯色，不能让窗口变成黑洞或导致功能崩溃
+
+### 算法与许可证
+
+`RefractionMap.cs` 的圆角 SDF / smoothstep / 透镜位移思路移植自
+GitHub `liquid-glass-react`（fivepointseven，MIT，v1.1.1）。详细声明在
+`verify/S2-Strip/THIRD-PARTY-NOTICES.txt`。原项目依赖浏览器 `backdrop-filter` +
+SVG `feDisplacementMap`，WPF 没有等价物，所以这里改成 GDI 抓屏 + C# 像素处理 +
+WPF 矢量图层；不是直接把 React 组件塞进 WPF。
+
+### 性能实测护栏
+
+- 720×720 简化版完整链路（抓屏 / 降采样 / 模糊 / 调色 / 上传小图）：约 20ms
+- 720×720 计算折射（默认关闭）：约 24ms（降采样后计算）
+- 条子 151×15：约 5~6ms
+- 通过 `GlassTests` 的自测必须保持全绿；材质调参不能破坏已有功能自测
+
+
 
 1. **不用全局钩子**（`WH_KEYBOARD_LL` / `WH_MOUSE_LL`）—— 避免杀软误报、避免商店审核麻烦
 2. **亚克力窗口绝不用 `AllowsTransparency="True"`** —— 它会给 HWND 加 `WS_EX_LAYERED`，

@@ -38,7 +38,6 @@ internal sealed class StripPanelWindow : Window
 {
     /// <summary>面板底色（深色）。面板里是白字，深底没法避免。</summary>
     private static readonly Color PanelBg = Color.FromRgb(0x1C, 0x1C, 0x1C);
-
     /// <summary>
     /// 条子的颜色。
     ///
@@ -52,21 +51,29 @@ internal sealed class StripPanelWindow : Window
     ///
     ///   这和 Google/YouTube 的"白底上放白色图标"是同一招数 ——
     ///   他们也是靠一圈阴影/描边让白图标在白底上仍然可见。
+    ///
+    /// ★ 上了玻璃材质之后（第五轮）：亮芯改为**半透明**，
+    ///   让底下抓来的背景透上来，看上去像一条真的玻璃棱 ——
+    ///   而不是一根刷了白漆的塑料条。
+    ///   描边也稍微收了透明度，免得在浅色壁纸上黑得像一道划痕。
     /// </summary>
-    /// <summary>条子的亮芯颜色。深色描边见 StripEdge。</summary>
-    private static readonly Color StripCore = Color.FromRgb(0xE8, 0xE8, 0xE8);   // 亮芯
-    private static readonly Color StripEdge = Color.FromRgb(0x18, 0x18, 0x18);   // 深色描边
+    private static readonly Color StripCore = Color.FromArgb(0xD8, 0xE8, 0xE8, 0xE8);   // 亮芯
+    private static readonly Color StripEdge = Color.FromArgb(0xE0, 0x18, 0x18, 0x18);   // 深色描边
 
-    private static readonly Color RowBg = Color.FromRgb(0x2E, 0x2E, 0x2E);
-    private static readonly Color RowHover = Color.FromRgb(0x42, 0x4A, 0x56);
-    private static readonly Color RowBorder = Color.FromRgb(0x3A, 0x3A, 0x3A);
+    // ★ 全部改成半透明（ARGB 第一个分量是 alpha）。
+    //   原来是不透明的深灰 —— 玻璃垫在下面也看不见，白做。
+    //   现在每条历史本身是一层薄薄的深色膜，玻璃的光泽从底下透上来。
+    //   这就是"简约但不失高级感"里"高级感"的来源。
+    private static readonly Color RowBg = Color.FromArgb(0x8C, 0x2E, 0x2E, 0x2E);
+    private static readonly Color RowHover = Color.FromArgb(0xCC, 0x42, 0x4A, 0x56);
+    private static readonly Color RowBorder = Color.FromArgb(0x44, 0x9A, 0x9A, 0x9A);
     private static readonly Color Accent = Color.FromRgb(0x8C, 0xD0, 0xFF);
-    private static readonly Color TitleBg = Color.FromRgb(0x25, 0x2A, 0x33);
-    private static readonly Color TimeFg = Color.FromRgb(0x9A, 0x9A, 0x9A);
-    private static readonly Color HintFg = Color.FromRgb(0xB0, 0xB0, 0xB0);
+    private static readonly Color TitleBg = Color.FromArgb(0x66, 0x25, 0x2A, 0x33);
+    private static readonly Color TimeFg = Color.FromRgb(0xC0, 0xC0, 0xC0);
+    private static readonly Color HintFg = Color.FromRgb(0xC8, 0xC8, 0xC8);
 
     /// <summary>被点击的那一条：黄底 + 黄边，一眼看出"我选了哪个"。</summary>
-    private static readonly Color SelectedBg = Color.FromRgb(0x4A, 0x3E, 0x1A);
+    private static readonly Color SelectedBg = Color.FromArgb(0xD0, 0x4A, 0x3E, 0x1A);
     private static readonly Color SelectedEdge = Color.FromRgb(0xFF, 0xC8, 0x3C);
 
     /// <summary>
@@ -96,6 +103,27 @@ internal sealed class StripPanelWindow : Window
 
     private readonly ClipboardHistory _history;
     private readonly Action<string> _log;
+    private readonly GlassParams _glass;
+
+    /// <summary>玻璃图层 + 渲染器（条子和面板共用一套）</summary>
+    private GlassChrome? _chrome;
+    private GlassSurface? _surface;
+
+    /// <summary>最近一次玻璃渲染的报告，给日志用</summary>
+    public string GlassReport { get; private set; } = "(还没渲染过)";
+
+    /// <summary>条子/面板的容器（玻璃层垫在它下面）</summary>
+    private Grid? _panes;
+
+    /// <summary>
+    /// 上次抓到玻璃时，前台窗口是谁。
+    ///
+    /// ★ 条子是**常驻显示**的，背后的画面随时可能变（用户切了个窗口）。
+    ///   但抓屏一次有 ~4ms 的固定开销，不能每帧都抓。
+    ///   折中：**前台窗口变了才重抓** —— 桌面壁纸变了我们不管
+    ///   （很少发生，而且条子只有 2mm 厚，看不出来）。
+    /// </summary>
+    private IntPtr _lastCaptureForeground = IntPtr.Zero;
 
     /// <summary>点了某一条 → 交给外面写剪贴板。参数是那条的文本。</summary>
     public event Action<string>? ItemActivated;
@@ -124,10 +152,11 @@ internal sealed class StripPanelWindow : Window
     private StackPanel _list = null!;
     private TextBlock _title = null!;
 
-    public StripPanelWindow(ClipboardHistory history, Action<string> log)
+    public StripPanelWindow(ClipboardHistory history, Action<string> log, GlassParams glass)
     {
         _history = history;
         _log = log;
+        _glass = glass;
 
         WindowStyle = WindowStyle.None;
         ResizeMode = ResizeMode.NoResize;
@@ -153,7 +182,9 @@ internal sealed class StripPanelWindow : Window
 
     private UIElement BuildContent()
     {
+        var outer = new Grid();
         var root = new Grid();
+        _panes = root;
 
         // ① 面板：铺满窗口。收起时隐藏。
         _panel = new Border
@@ -215,7 +246,15 @@ internal sealed class StripPanelWindow : Window
         };
         root.Children.Add(_strip);
 
-        return root;
+        // ★ 玻璃层垫在最底下（先加 = 在下层）。
+        //   条子和面板都是半透明的，玻璃的光泽从底下透上来。
+        _chrome = GlassChrome.Build(_glass,
+                                    Geometry.PanelWidthDip * 1.2,   // 取两者较大者当画布
+                                    Geometry.PanelHeightDip);
+        outer.Children.Add(_chrome.Root);
+        outer.Children.Add(root);
+
+        return outer;
     }
 
     private UIElement BuildTitleBar()
@@ -561,11 +600,21 @@ internal sealed class StripPanelWindow : Window
         int yPx = _anchorTopPx;
 
         ClearClip();
+
+        // ★ 玻璃层要按**当前的**尺寸重设圆角裁剪和描边 ——
+        //   条子和面板是同一个窗口的两个尺寸，圆角半径一样但裁剪矩形不同。
+        _chrome?.ApplyStyle(wPx / _scale, hPx / _scale);
+
+        // ★ 抓屏必须在 ApplyBounds（= SetWindowPos 显示窗口）**之前**。
+        //   条子是常驻显示的，抓屏时要把自己排除掉，否则会糊到自己上一帧。
+        RenderGlass(xPx, yPx, wPx, hPx, force: true);
+
         ApplyBounds(xPx, yPx, wPx, hPx, "收起");
         SetClickThrough(true);
 
         _log($"  [条子] 收起 → 物理({xPx},{yPx}) {wPx}×{hPx}px "
              + $"中心x={_anchorCenterXPx} 缩放{_scale:0.##}× 实际={BoundsText} 穿透={_clickThrough}");
+        _log($"  [条子·玻璃] {GlassReport}");
     }
 
     /// <summary>
@@ -593,6 +642,11 @@ internal sealed class StripPanelWindow : Window
         _panel.Visibility = Visibility.Visible;
         _panel.Opacity = 1;
 
+        // ★ 面板尺寸变了：玻璃的圆角裁剪要按新尺寸重设，
+        //   并且要按新尺寸重抓一次背景。两者都必须在 ApplyBounds 之前。
+        _chrome?.ApplyStyle(wPx / _scale, hPx / _scale);
+        RenderGlass(xPx, yPx, wPx, hPx, force: true);
+
         ApplyBounds(xPx, yPx, wPx, hPx, "展开");
         UpdateLayout();
 
@@ -606,6 +660,53 @@ internal sealed class StripPanelWindow : Window
 
         _log($"  [面板] 展开 → 物理({xPx},{yPx}) {wPx}×{hPx}px "
              + $"缩放{_scale:0.##}× 实际={BoundsText} 条目={_history.Items.Count}");
+    }
+
+    /// <summary>
+    /// 抓一次背景 + 渲染玻璃，然后贴到图层上。
+    ///
+    /// ★ **必须在 SetWindowPos 显示窗口之前调** ——
+    ///   窗口一旦可见，抓到的就是"玻璃盖在自己身上"的画面，越叠越脏。
+    ///
+    /// sheet = true 时给条子用：条子**常驻显示**，所以抓屏时要把自己
+    /// 排除掉（SetWindowDisplayAffinity），否则同样会糊到自己。
+    ///
+    /// <paramref name="force"/> = false 时只在**前台窗口变了**才真的重抓 ——
+    /// 抓屏有 ~4ms 的固定开销，静止期间没必要反复抓。
+    /// </summary>
+    private void RenderGlass(int xPx, int yPx, int wPx, int hPx, bool force)
+    {
+        if (_chrome is null) return;
+
+        if (!force)
+        {
+            IntPtr fg = GetForegroundWindow();
+            if (fg == _lastCaptureForeground && _surface?.LastSucceeded == true) return;
+            _lastCaptureForeground = fg;
+        }
+
+        _surface ??= new GlassSurface(_glass);
+
+        if (_surface.Render(xPx, yPx, wPx, hPx))
+        {
+            _chrome.AttachBitmaps(_surface);
+            GlassReport = _surface.LastBreakdown;
+        }
+        else
+        {
+            GlassReport = $"★ 玻璃渲染失败，退回纯色：{_surface.LastBreakdown}";
+        }
+    }
+
+    /// <summary>
+    /// 调参面板拖动时调用：按当前窗口实际矩形重画玻璃。
+    ///
+    /// 这是一个**只给调参用的公开入口**，正常展开/收起仍然走各自的
+    /// ShowCollapsed / ShowExpanded 路径。坐标和尺寸都是物理像素。
+    /// </summary>
+    public void RefreshGlassForTuning(RectPx bounds)
+    {
+        RenderGlass(bounds.X, bounds.Y, bounds.W, bounds.H, force: true);
     }
 
     public void HideAll()

@@ -37,22 +37,38 @@ internal sealed class GridWindow : Window
     /// <summary>格子之间的缝（DIP）</summary>
     private const double Gap = 3;
 
-    private static readonly Color NormalBg = Color.FromRgb(0x2E, 0x2E, 0x2E);
-    private static readonly Color NormalBorder = Color.FromRgb(0x50, 0x50, 0x50);
-    private static readonly Color ActiveBg = Color.FromRgb(0x1E, 0x3A, 0x52);
+    // ★ 格子颜色全部改成**半透明**（ARGB 的第一个分量是 alpha）。
+    //
+    //   原来是不透明的深灰 —— 玻璃材质垫在下面也看不见，白做。
+    //   现在格子本身是一层薄薄的深色膜，玻璃的光泽从底下透上来。
+    //   这就是"简约但不失高级感"里"高级感"的来源。
+    private static readonly Color NormalBg = Color.FromArgb(0x8C, 0x2E, 0x2E, 0x2E);
+    private static readonly Color NormalBorder = Color.FromArgb(0x66, 0x9A, 0x9A, 0x9A);
+    private static readonly Color ActiveBg = Color.FromArgb(0xC8, 0x1E, 0x3A, 0x52);
     private static readonly Color ActiveBorder = Color.FromRgb(0x7A, 0xC8, 0xFF);
 
     private readonly ClipboardHistory _history;
     private readonly Action<string> _log;
+    private readonly GlassParams _glass;
 
     private readonly Border[,] _grid = new Border[Rows, Cols];
     private readonly TextBlock[,] _labels = new TextBlock[Rows, Cols];
     private readonly string?[,] _content = new string?[Rows, Cols];
 
+    /// <summary>玻璃图层 + 玻璃渲染器</summary>
+    private GlassChrome? _chrome;
+    private GlassSurface? _surface;
+
+    /// <summary>格子的根节点（玻璃层盖在它下面）</summary>
+    private Grid? _cellRoot;
+
     public event Action<string>? CellActivated;
 
     private IntPtr _hwnd;
     private string _lastShown = "(还没显示过)";
+
+    /// <summary>最近一次玻璃渲染的耗时报告，给日志用</summary>
+    public string GlassReport { get; private set; } = "(还没渲染过)";
 
     /// <summary>
     /// 原点（物理像素）—— 按下 Alt+V 那一刻的鼠标位置，方向判定全程以它为基准。
@@ -68,10 +84,11 @@ internal sealed class GridWindow : Window
     /// <summary>格子边长（物理像素）—— 显示时按 DPI 算</summary>
     private int _cellPx;
 
-    public GridWindow(ClipboardHistory history, Action<string> log)
+    public GridWindow(ClipboardHistory history, Action<string> log, GlassParams glass)
     {
         _history = history;
         _log = log;
+        _glass = glass;
 
         WindowStyle = WindowStyle.None;
         ResizeMode = ResizeMode.NoResize;
@@ -92,12 +109,13 @@ internal sealed class GridWindow : Window
 
     private UIElement BuildContent()
     {
-        var root = new Grid();
+        var outer = new Grid();
+        _cellRoot = new Grid();
 
         for (int r = 0; r < Rows; r++)
         {
-            root.RowDefinitions.Add(new RowDefinition());
-            root.ColumnDefinitions.Add(new ColumnDefinition());
+            _cellRoot.RowDefinitions.Add(new RowDefinition());
+            _cellRoot.ColumnDefinitions.Add(new ColumnDefinition());
         }
 
         // 格子内容宽度 = 格子边长 - 两边缝 - 边框 - 内边距
@@ -132,20 +150,29 @@ internal sealed class GridWindow : Window
                     Background = new SolidColorBrush(NormalBg),
                     BorderBrush = new SolidColorBrush(NormalBorder),
                     BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(10),
                     ClipToBounds = true,          // ★ 内容绝不越界
                     Child = label,
                 };
 
                 Grid.SetRow(border, r);
                 Grid.SetColumn(border, c);
-                root.Children.Add(border);
+                _cellRoot.Children.Add(border);
 
                 _grid[r, c] = border;
                 _labels[r, c] = label;
             }
         }
 
-        return root;
+        // ★ 玻璃层垫在格子**下面**。
+        //
+        //   顺序很重要：先加玻璃（在下），再加格子（在上）。
+        //   格子本身是半透明的深色膜，玻璃的光泽从底下透上来。
+        _chrome = GlassChrome.Build(_glass, CellSize * Cols, CellSize * Rows);
+        outer.Children.Add(_chrome.Root);
+        outer.Children.Add(_cellRoot);
+
+        return outer;
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -159,8 +186,16 @@ internal sealed class GridWindow : Window
         int none = unchecked((int)DWMWA_COLOR_NONE);
         DwmSetWindowAttribute(_hwnd, DWMWA_BORDER_COLOR, ref none, sizeof(int));
 
-        int round = DWMWCP_ROUND;
+        // ★ 圆角改由 WPF 的矢量裁剪来画（GlassChrome 里做），
+        //   所以这里必须关掉 DWM 的圆角 ——
+        //   两个圆角叠在一起，半径不一致，角上会露出一圈难看的缝。
+        int round = DWMWCP_DONOTROUND;
         DwmSetWindowAttribute(_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref round, sizeof(int));
+
+        // 关掉非客户区渲染（去掉 DWM 给窗口画的投影）——
+        // 投影由玻璃层自己控制，DWM 那个是方角的，会把圆角衬出来。
+        int ncPolicy = DWMNCRP_DISABLED;
+        DwmSetWindowAttribute(_hwnd, DWMWA_NCRENDERING_POLICY, ref ncPolicy, sizeof(int));
 
         int dark = 1;
         DwmSetWindowAttribute(_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
@@ -253,6 +288,13 @@ internal sealed class GridWindow : Window
         ClearActive();
         UpdateLayout();
 
+        // ★★ 抓屏必须在 SetWindowPos **之前** ★★
+        //
+        //   窗口一旦可见，抓到的就是"玻璃盖在自己身上"的画面，
+        //   于是玻璃会糊住自己上一帧的样子，越叠越脏。
+        //   此刻窗口还是隐藏的，桌面上那块地方是干净的。
+        RenderGlass(xPx, yPx, sidePx);
+
         SetWindowPos(_hwnd, HWND_TOPMOST, xPx, yPx, sidePx, sidePx,
                      SWP_NOACTIVATE | SWP_SHOWWINDOW);
 
@@ -264,6 +306,31 @@ internal sealed class GridWindow : Window
 
         _lastShown = $"物理({xPx},{yPx}) 边长{sidePx}px 格子{_cellPx}px 缩放{scale:0.##}× "
                    + $"原点({_originX},{_originY}) 光标={CursorHider.IsHidden}";
+    }
+
+    /// <summary>
+    /// 渲染玻璃并贴到图层上。
+    ///
+    /// ★ 只在**弹出时**调一次。静止期间背景不会变（我们自己盖在上面），
+    ///   而抓屏有 ~4ms 的固定开销地板 —— 每帧抓一次是纯粹的浪费。
+    ///   实测：整个流水线约 18ms，Alt+V 弹出时感觉不到。
+    /// </summary>
+    private void RenderGlass(int xPx, int yPx, int sidePx)
+    {
+        if (_chrome is null) return;
+
+        _surface ??= new GlassSurface(_glass);
+
+        if (_surface.Render(xPx, yPx, sidePx, sidePx))
+        {
+            _chrome.AttachBitmaps(_surface);
+            GlassReport = _surface.LastBreakdown;
+        }
+        else
+        {
+            // 抓屏失败（锁屏、无头环境、权限）—— 退回纯色，不能让窗口变黑洞
+            GlassReport = $"★ 玻璃渲染失败，退回纯色：{_surface.LastBreakdown}";
+        }
     }
 
     public void HideGrid()

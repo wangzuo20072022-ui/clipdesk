@@ -28,6 +28,7 @@ internal static class Program
 {
     private const int ExitHotKeyId = 0x0C21;
     private const int AltHotKeyId = 0x0C22;
+    private const int TuningHotKeyId = 0x0C23;
 
     /// <summary>
     /// 剪贴板事件去抖窗口（毫秒）。
@@ -58,6 +59,13 @@ internal static class Program
 
     private static readonly Verdict V = new();
     private static readonly ClipboardHistory History = new(20);
+
+    /// <summary>
+    /// 玻璃材质参数。从 out/glass.json 读，调参面板改的就是它。
+    /// ★ 全局唯一一份 —— 三个界面共用，调一次三个一起变。
+    /// </summary>
+    private static readonly GlassParams Glass = GlassParams.Load();
+
     private static readonly Stopwatch _bootClock = new();
 
     private static HwndSource? _msgWindow;
@@ -80,6 +88,7 @@ internal static class Program
 
     // 九宫格
     private static GridWindow? _grid;
+    private static GlassTuningWindow? _tuning;
     private static bool _altHotkeyRegistered;
     private static volatile bool _altDown;
     private static DateTime _altDownAt;
@@ -100,6 +109,8 @@ internal static class Program
         EdgeTriggerTests.Run();
         HistoryPromoteTests.Run();
         GridSelectionTests.Run();
+        GlassTests.Run();
+        GlassTests.RunScreenProbe();
 
         PrintHeader();
 
@@ -108,6 +119,8 @@ internal static class Program
         Console.WriteLine($"[构建] 这份 exe 编译于 "
                           + $"{System.IO.File.GetLastWriteTime(Environment.ProcessPath!):yyyy-MM-dd HH:mm:ss}");
         Console.WriteLine($"[构建] 路径 = {Environment.ProcessPath}");
+        Console.WriteLine($"[玻璃] 参数：{Glass.Summary}");
+        Console.WriteLine($"[玻璃] 存盘位置：{GlassParams.DefaultPath}");
 
         if (args.Length > 0 && int.TryParse(args[0], out int seconds) && seconds > 0)
         {
@@ -227,6 +240,11 @@ internal static class Program
                                               MOD_ALT | MOD_NOREPEAT, VK_V);
         V.Log($"  ★ 九宫格热键 Alt+V = {(_altHotkeyRegistered ? "已注册" : "★注册失败（被占用？）")}");
 
+        // ── 玻璃调参热键 Ctrl+Alt+G ──
+        bool tuningHotkey = RegisterHotKey(_msgHwnd, TuningHotKeyId,
+                                           MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_G);
+        V.Log($"  ★ 玻璃调参热键 Ctrl+Alt+G = {(tuningHotkey ? "已注册" : "★注册失败（被占用？）")}");
+
         // ★★ 热键被占用时**醒目警告**。
         //
         //   这个坑踩过两次了：旧版本的探针还在后台跑，把 Alt+V 占着，
@@ -264,7 +282,7 @@ internal static class Program
 
     private static void CreatePanel()
     {
-        _panel = new StripPanelWindow(History, V.Log);
+        _panel = new StripPanelWindow(History, V.Log, Glass);
         _panel.ItemActivated += OnItemActivated;
 
         // 先建好 HWND（这不显示）
@@ -287,7 +305,7 @@ internal static class Program
         // ── 九宫格（Alt+V）也一起预热 ──
         //   预热必须走一遍 WPF Show()，否则视觉树没 Measure/Arrange，
         //   热键一按只会得到一个纯色空框（S0 为这件事白折腾过两轮）。
-        _grid = new GridWindow(History, V.Log);
+        _grid = new GridWindow(History, V.Log, Glass);
         new WindowInteropHelper(_grid).EnsureHandle();
         _grid.Prewarm();
         V.Log("  ★ 九宫格已预热（按住 Alt+V 弹出）");
@@ -307,6 +325,11 @@ internal static class Program
 
             case WM_HOTKEY when wParam.ToInt32() == AltHotKeyId:
                 OnAltPressed();
+                handled = true;
+                break;
+
+            case WM_HOTKEY when wParam.ToInt32() == TuningHotKeyId:
+                ToggleTuning();
                 handled = true;
                 break;
 
@@ -390,6 +413,7 @@ internal static class Program
         _gridVisible = true;
 
         V.Log($"  位置 = {_grid.LastShownPosition}");
+        V.Log($"  {_grid.GlassReport}");
     }
 
     /// <summary>松开 Alt —— 结算选中的那一格。</summary>
@@ -757,6 +781,52 @@ internal static class Program
         Console.WriteLine();
     }
 
+    private static void ToggleTuning()
+    {
+        if (_tuning is null)
+        {
+            _tuning = new GlassTuningWindow(Glass, RefreshGlassSurfaces);
+            _tuning.Closed += (_, _) => _tuning = null;
+            _tuning.Show();
+            V.Log("[调参] Ctrl+Alt+G → 调参面板打开");
+        }
+        else if (_tuning.IsVisible)
+        {
+            _tuning.Hide();
+            V.Log("[调参] Ctrl+Alt+G → 调参面板隐藏");
+        }
+        else
+        {
+            _tuning.Show();
+            V.Log("[调参] Ctrl+Alt+G → 调参面板显示");
+        }
+    }
+
+    /// <summary>
+    /// 调参滑块变动后，让三个界面下一次出现时使用新参数。
+    ///
+    /// ★ 九宫格 / 面板不是常驻的，下一次 Show 时自然会按新参数抓屏。
+    ///   条子是常驻的，必须立即重画 —— 但不在调参回调里同步抓屏，
+    ///   否则拖动滑块会卡住调参窗口。用 Dispatcher 异步排一次即可。
+    /// </summary>
+    private static void RefreshGlassSurfaces()
+    {
+        V.Log($"[调参] 参数已变更：{Glass.Summary}");
+
+        if (_panel is null || !_panel.IsVisible) return;
+
+        _panel.Dispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.Background,
+            new Action(() =>
+            {
+                // 条子/面板当前是什么尺寸，就按当前 Bounds 重新渲染。
+                if (_panel is null) return;
+
+                var b = _panel.HitRect;
+                _panel.RefreshGlassForTuning(b);
+            }));
+    }
+
     private static void Cleanup()
     {
         Console.WriteLine();
@@ -764,6 +834,7 @@ internal static class Program
 
         UnregisterHotKey(_msgHwnd, ExitHotKeyId);
         if (_altHotkeyRegistered) UnregisterHotKey(_msgHwnd, AltHotKeyId);
+        UnregisterHotKey(_msgHwnd, TuningHotKeyId);
         RemoveClipboardFormatListener(_msgHwnd);
 
         // ★ 光标还原。这一步绝不能省 —— 漏了用户得重启才能看到鼠标。
