@@ -96,7 +96,17 @@ internal sealed class GridWindow : Window
         ShowActivated = false;
         Topmost = true;
         AllowsTransparency = false;
-        Background = new SolidColorBrush(Color.FromRgb(0x14, 0x14, 0x14));
+
+        // ★ 窗口自己的底色也必须是**透明**。
+        //
+        //   原来是 #141414（不透明近黑）。它的位置在 Content 之下，
+        //   但 Content 里只要有任何一像素没被画到，露出来的就是它。
+        //   九宫格是 720×720 的窗口、格子之间有 3px 缝、还有圆角 ——
+        //   这些缝和圆角外面原来全是这个近黑，所以整块看上去就是黑的。
+        //
+        //   改成透明之后，没画到的地方会真实地"什么都没有"，
+        //   问题会立刻暴露出来（变成透明/桌面），而不是被黑底伪装成"很暗的玻璃"。
+        Background = Brushes.Transparent;
 
         Width = CellSize * Cols;
         Height = CellSize * Rows;
@@ -322,9 +332,22 @@ internal sealed class GridWindow : Window
         if (_surface.Render(xPx, yPx, sidePx, sidePx))
         {
             _chrome.AttachBitmaps(_surface);
+
+            // ★★ 交付前自检：把"玻璃图看起来是不是黑的"直接打出来。
+            //
+            //   这是用户连续两轮看到全黑之后专门加的 ——
+            //   之前日志里只有耗时，没有"看得见吗"的量化结论，
+            //   所以全黑被当成正常值播了过去。现在它是一行显式的判定。
+            var vis = _surface.GlassVisibility;
             GlassReport = _surface.LastBreakdown
-                        + $"；原图 {_surface.RawAverageBrightness:0.#}"
-                        + $"；玻璃图 {_surface.GlassAverageBrightness:0.#}";
+                        + $"\n  ★ 可见性自检：{vis}"
+                        + $"\n     （原图 {_surface.RawVisibility}）";
+
+            if (!vis.Ok)
+            {
+                GlassReport += "\n  ★★ 警告：玻璃图被判为不可见（接近全黑或纯色）"
+                             + " —— 这不是材质参数的问题，是背景没透出来";
+            }
         }
         else
         {
@@ -493,9 +516,10 @@ internal sealed class GridWindow : Window
             }
         }
 
-        // 中心格：纯空
+        // 中心格：纯空 —— 但要**半透明**，否则会把玻璃背景挡掉一块。
+        // 这里曾经写死 #0C0C0C（不透明），用户截图里正中间最黑的那块就是它。
         _labels[1, 1].Text = "";
-        _grid[1, 1].Background = new SolidColorBrush(Color.FromRgb(0x0C, 0x0C, 0x0C));
+        _grid[1, 1].Background = new SolidColorBrush(Color.FromArgb(0x18, 0x0C, 0x0C, 0x0C));
 
         for (int i = 0; i < GridSelection.SelectableCount; i++)
         {

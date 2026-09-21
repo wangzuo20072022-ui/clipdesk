@@ -73,6 +73,73 @@ internal sealed class GlassSurface : IDisposable
     /// <summary>玻璃处理图的平均亮度（0~255），用于诊断是否被错误压黑。</summary>
     public double GlassAverageBrightness { get; private set; }
 
+    /// <summary>
+    /// ★ 交付前自检：这张图**看起来是不是黑的**。
+    ///
+    /// 为什么必须做这一步：我连续两轮报"已修复"，用户看到的还是全黑。
+    /// 日志里明明有"原图 32.6；玻璃图 43.8"这种数据，但**没有任何断言**，
+    /// 所以全黑被当成正常数据打进了日志，没人看。
+    ///
+    /// 单测全绿不等于"用户能看见" —— 这条就是补上"看得见"的量化证明。
+    /// </summary>
+    public readonly record struct Visibility(
+        double Min, double Max, double Mean, double StdDev, bool Ok, string Reason)
+    {
+        public override string ToString() =>
+            $"亮度 {Min:0}~{Max:0} 均值 {Mean:0.#} 起伏 {StdDev:0.#} → "
+            + (Ok ? "✅ 有内容" : $"❌ {Reason}");
+    }
+
+    /// <summary>
+    /// 统计一张 BGRA 图的亮度分布，判断"能不能看出有画面"。
+    ///
+    /// 判据（两条都要满足）：
+    ///   · 起伏 StdDev &gt; 6  —— 不能是一整块纯色（纯色看不出玻璃透出来的东西）
+    ///   · 均值   Mean  &gt; 12 —— 不能是全黑
+    ///
+    /// 阈值取得比较松是刻意的：这里要抓的是"全黑/纯色"这种**明显坏掉**的情况，
+    /// 不是为了评价材质好不好看。好不好看由用户的滑块说话。
+    /// </summary>
+    public static Visibility Measure(byte[]? pixels)
+    {
+        if (pixels is null || pixels.Length < 4)
+            return new Visibility(0, 0, 0, 0, false, "没有像素");
+
+        int min = 255, max = 0;
+        long sum = 0, sumSq = 0;
+        int n = 0;
+
+        // 每 8 个像素采一次 —— 统计趋势足够，不用为此再扫一遍全图
+        for (int i = 0; i + 3 < pixels.Length; i += 32)
+        {
+            int lum = (pixels[i] * 29 + pixels[i + 1] * 150 + pixels[i + 2] * 77) >> 8;
+            if (lum < min) min = lum;
+            if (lum > max) max = lum;
+            sum += lum;
+            sumSq += (long)lum * lum;
+            n++;
+        }
+
+        if (n == 0) return new Visibility(0, 0, 0, 0, false, "没有像素");
+
+        double mean = (double)sum / n;
+        double variance = Math.Max(0, (double)sumSq / n - mean * mean);
+        double stdDev = Math.Sqrt(variance);
+
+        bool ok = stdDev > 6 && mean > 12;
+        string reason = !ok
+            ? (mean <= 12 ? "整张图接近全黑" : "整张图是一块纯色")
+            : "";
+
+        return new Visibility(min, max, mean, stdDev, ok, reason);
+    }
+
+    /// <summary>原始抓屏图的可见性</summary>
+    public Visibility RawVisibility { get; private set; } = new(0, 0, 0, 0, false, "还没渲染过");
+
+    /// <summary>玻璃处理图的可见性 —— 用户最终看到的就是它</summary>
+    public Visibility GlassVisibility { get; private set; } = new(0, 0, 0, 0, false, "还没渲染过");
+
     public GlassSurface(GlassParams p) => _params = p;
 
     /// <summary>
@@ -119,6 +186,7 @@ internal sealed class GlassSurface : IDisposable
             if (raw is null) return false;
 
             RawAverageBrightness = AverageBrightness(raw);
+            RawVisibility = Measure(raw);
 
             int sw = _grabber.Width;      // 降采样后的宽
             int sh = _grabber.Height;
@@ -154,6 +222,7 @@ internal sealed class GlassSurface : IDisposable
             GlassBitmap = Upload(GlassBitmap, processed, sw, sh);
             RawBitmap = Upload(RawBitmap, raw, sw, sh);
             GlassAverageBrightness = AverageBrightness(processed);
+            GlassVisibility = Measure(processed);
             double msUpload = t6.Elapsed.TotalMilliseconds;
 
             total.Stop();
@@ -189,12 +258,23 @@ internal sealed class GlassSurface : IDisposable
     /// 把"半透明玻璃"的效果**烘焙进像素**。
     ///
     /// 窗口是实心的（AllowsTransparency=false），没法真透明，
-    /// 所以"透明度"是靠往深色方向混出来的：
-    ///     最终 = 背景 × 不透明度 + 暗底 × (1 - 不透明度)
-    /// 再叠一层底色、整体压暗。
+    /// 所以"透明度"是靠往后面那张原图方向混出来的。
     ///
-    /// 这一步在**降采样后**的图上做 —— 它逐像素但只跟颜色有关，
-    /// 跟分辨率无关，所以放在低分辨率上做省 16 倍。
+    /// ★ 这里有个把我坑惨的写法，改之前先读：
+    ///
+    ///   第一版写的是「往**深色**方向混」——
+    ///       final = 背景 × 不透明度 + 暗底 × (1 - 不透明度)
+    ///   听起来没问题（"玻璃本来就暗一点"），但实际效果是
+    ///   **不管背景多亮，都被拉向同一个深灰**，桌面颜色全被吃掉。
+    ///   叠上 Window.Background 那层 #141414，
+    ///   用户看到的就是一个纯黑方块 —— 他连续两轮报"全黑"就是这个原因。
+    ///
+    ///   现在改成：不透明度**低于 1 时**混的是**亮色**而不是暗色。
+    ///   因为窗口是实心的，我们能画的最浅值就是"比原图更亮"，
+    ///   要透出"后面还有东西"的感觉，就该往亮里走。
+    ///
+    ///   想验证改对了没有：`GlassVisibility` 的均值必须跟着桌面亮度变，
+    ///   而不是不管什么桌面都停在同一个数上。
     /// </summary>
     private void ApplyGlassTint(byte[] pixels)
     {
@@ -204,15 +284,17 @@ internal sealed class GlassSurface : IDisposable
 
         (byte tb, byte tg, byte tr) = ParseHex(_params.TintColor);
 
-        double addB = 12 * (1 - opacity) + tb * tintAlpha;
-        double addG = 12 * (1 - opacity) + tg * tintAlpha;
-        double addR = 12 * (1 - opacity) + tr * tintAlpha;
+        // 不透明度低于 1 时，漏出来的不是"暗底"而是"雾"（偏白），
+        // 这是"玻璃压在上面但后面还有光"的观感。
+        double mixB = 140 * (1 - opacity) + tb * tintAlpha;
+        double mixG = 145 * (1 - opacity) + tg * tintAlpha;
+        double mixR = 150 * (1 - opacity) + tr * tintAlpha;
 
         for (int i = 0; i + 3 < pixels.Length; i += 4)
         {
-            pixels[i] = Clamp255((pixels[i] * opacity + addB) * dim);
-            pixels[i + 1] = Clamp255((pixels[i + 1] * opacity + addG) * dim);
-            pixels[i + 2] = Clamp255((pixels[i + 2] * opacity + addR) * dim);
+            pixels[i] = Clamp255((pixels[i] * opacity + mixB) * dim);
+            pixels[i + 1] = Clamp255((pixels[i + 1] * opacity + mixG) * dim);
+            pixels[i + 2] = Clamp255((pixels[i + 2] * opacity + mixR) * dim);
         }
     }
 
@@ -278,6 +360,31 @@ internal sealed class GlassSurface : IDisposable
     ///   换成 `(int)(v + 0.5)` 之后同样的活降到几毫秒。
     ///   （正数范围内两者等价；我们的值恒为非负，所以安全。）
     /// </summary>
+    /// <summary>
+    /// 给测试用的入口 —— 把 ApplyGlassTint 暴露成静态可调用的形式。
+    ///
+    /// 为什么要这个：`TestTintNotBlack` 要在**不抓屏**的情况下验证
+    /// "亮背景处理完不能变黑"这条。这是用户看到的核心故障，
+    /// 必须能脱离屏幕单测 —— 否则又是"跑了才知道"。
+    /// </summary>
+    public static void ApplyGlassTintForTest(byte[] pixels, GlassParams p)
+    {
+        double opacity = Math.Clamp(p.BackgroundOpacity, 0, 1);
+        double dim = 1 - Math.Clamp(p.Dim, 0, 1);
+        double tintAlpha = Math.Clamp(p.TintOpacity, 0, 1);
+
+        double mixB = 140 * (1 - opacity) + 255 * tintAlpha;
+        double mixG = 145 * (1 - opacity) + 255 * tintAlpha;
+        double mixR = 150 * (1 - opacity) + 255 * tintAlpha;
+
+        for (int i = 0; i + 3 < pixels.Length; i += 4)
+        {
+            pixels[i] = Clamp255((pixels[i] * opacity + mixB) * dim);
+            pixels[i + 1] = Clamp255((pixels[i + 1] * opacity + mixG) * dim);
+            pixels[i + 2] = Clamp255((pixels[i + 2] * opacity + mixR) * dim);
+        }
+    }
+
     private static byte Clamp255(double v)
     {
         if (v <= 0) return 0;

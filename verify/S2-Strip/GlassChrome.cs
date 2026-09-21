@@ -72,10 +72,17 @@ internal sealed class GlassChrome
     {
         var root = new Grid
         {
-            // 窗口是实心的，万一抓屏失败才露出这个底色。
-            // 正常情况下 Image 会被 AttachBitmaps 的原始图完全覆盖，
-            // 这里不能用接近黑色的底色来伪装成功，否则抓屏失败会和正常玻璃混淆。
-            Background = new SolidColorBrush(Color.FromArgb(0x01, 0x10, 0x10, 0x10)),
+            // ★ 兜底色改成**透明**。
+            //
+            //   原来这里是 ARGB(0x01,#101010)（近乎黑的实色）。
+            //   它的本意是"万一某层没画满，别露出白板"，
+            //   但实际后果是：只要 Image 因为任何原因没画出来，
+            //   用户看到的就是这层近黑 —— 加上窗口自己那层 #141414，
+            //   就是用户连续两轮截到的"全黑九宫格"。
+            //
+            //   现在改成透明：没画满就真的没画满，一眼看得出来，
+            //   而不是被一层黑伪装成"正常但很暗"。
+            Background = Brushes.Transparent,
             ClipToBounds = true,
         };
 
@@ -184,18 +191,38 @@ internal sealed class GlassChrome
     /// <summary>
     /// 把刚渲染出来的位图接到图层上。
     ///
-    /// ★ 只是换 Source，不重建视觉树 —— 所以调参时反复调用也很便宜。
+    /// ★ 这里用了**两道**冗余，因为"看不见"这个故障已经坑了两轮：
+    ///
+    ///   ① Image 元素 —— 正常渲染路径
+    ///   ② Root 的 Background 刷 —— ★ **即使 Image 因为布局/尺寸问题没画出来，
+    ///      背景刷也会把玻璃图铺满**
+    ///
+    ///   只有一道的时候，任何"Image 没排上版"的意外都会让用户看到一片空白
+    ///   （或者更糟：看到下面那层黑底）。两道的成本是一次 ImageBrush 分配，
+    ///   换来的是"用户不可能再看到全黑"。
     /// </summary>
     public void AttachBitmaps(GlassSurface surface)
     {
-        GlassLayer.Source = surface.GlassBitmap;
         RawLayer.Source = surface.RawBitmap;
+        GlassLayer.Source = surface.GlassBitmap;
 
-        // 渲染失败（抓屏挂了）时，两张图都是 null，
-        // 那就只剩描边和内发光 —— 至少窗口还在，不会变成一个黑洞。
-        if (surface.GlassBitmap is null)
+        // ② 冗余层：把玻璃图直接铺在这个 Grid 的背景上。
+        if (surface.GlassBitmap is not null)
         {
-            Root.Background = new SolidColorBrush(Color.FromRgb(0x14, 0x14, 0x14));
+            var brush = new ImageBrush(surface.GlassBitmap)
+            {
+                Stretch = Stretch.Fill,
+                AlignmentX = AlignmentX.Center,
+                AlignmentY = AlignmentY.Center,
+            };
+            RenderOptions.SetBitmapScalingMode(brush, BitmapScalingMode.HighQuality);
+            Root.Background = brush;
+        }
+        else
+        {
+            // 渲染失败（抓屏挂了）—— 退回透明，让窗口自己的颜色决定。
+            // 不填近黑，是为了让"失败"看起来就是失败，而不是被伪装成深色玻璃。
+            Root.Background = Brushes.Transparent;
         }
     }
 

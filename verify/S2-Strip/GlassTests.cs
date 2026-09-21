@@ -39,9 +39,90 @@ internal static class GlassTests
         TestBlur();
         TestResample();
         TestColor();
+        TestVisibility();
+        TestTintNotBlack();
 
         Console.WriteLine($"  小计：{_pass} 通过 / {_fail} 失败");
         Console.WriteLine("──────────────────────────────────────────────────");
+    }
+
+    // ── ★ 可见性断言（本次新增，就是它该早点存在）─────────────────
+
+    /// <summary>
+    /// 测 "这张图看起来是不是黑的"。
+    ///
+    /// ★ 为什么必须补这一组：连续两轮我报"已修复"，用户看到的还是全黑。
+    ///   日志里明明有"原图 32.6；玻璃图 43.8"，但**没有断言**，
+    ///   全黑数据被当成正常值播了过去。
+    ///   **单测全绿不等于用户能看见** —— 这组就是"看得见"的量化证明。
+    /// </summary>
+    private static void TestVisibility()
+    {
+        // 全黑 = 必须被判为不可见
+        byte[] black = Solid(20, 20, 0, 0, 0);
+        var vBlack = GlassSurface.Measure(black);
+        Report($"★ 全黑被判为不可见（{vBlack.Mean:0.#}）", !vBlack.Ok);
+
+        // 纯色（哪怕是亮的）= 判为不可见 —— 看不出玻璃透出了什么
+        byte[] flat = Solid(20, 20, 128, 128, 128);
+        var vFlat = GlassSurface.Measure(flat);
+        Report($"★ 纯色被判为不可见（均值 {vFlat.Mean:0.#}）", !vFlat.Ok);
+
+        // 有明暗变化的图 = 可见
+        byte[] varied = new byte[40 * 40 * 4];
+        for (int y = 0; y < 40; y++)
+            for (int x = 0; x < 40; x++)
+            {
+                int o = (y * 40 + x) * 4;
+                byte v = (byte)(x < 20 ? 40 : 220);
+                varied[o] = v; varied[o + 1] = v; varied[o + 2] = v; varied[o + 3] = 255;
+            }
+        var vGood = GlassSurface.Measure(varied);
+        Report($"★ 有明暗的图被判为可见（{vGood.Mean:0.#}，起伏 {vGood.StdDev:0.#}）", vGood.Ok);
+
+        // 空输入不能崩
+        var vNull = GlassSurface.Measure(null);
+        Report("null 输入不崩且判为不可见", !vNull.Ok);
+        var vEmpty = GlassSurface.Measure(Array.Empty<byte>());
+        Report("空数组不崩且判为不可见", !vEmpty.Ok);
+    }
+
+    /// <summary>
+    /// ★ 最核心的一条：**玻璃处理不能把亮背景变黑**。
+    ///
+    /// 这是用户看到的故障本身 —— 抓屏成功了（原图均值 60+），
+    /// 但经过处理之后变成了黑色。所以这条直接对着故障断言。
+    /// </summary>
+    private static void TestTintNotBlack()
+    {
+        // 造一张"像真实桌面"的图：中等亮度 + 有起伏
+        const int W = 60, H = 60;
+        byte[] backdrop = new byte[W * H * 4];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                int o = (y * W + x) * 4;
+                byte v = (byte)(60 + (x * 120 / W));
+                backdrop[o] = v; backdrop[o + 1] = v; backdrop[o + 2] = v; backdrop[o + 3] = 255;
+            }
+
+        var before = GlassSurface.Measure(backdrop);
+
+        // 跑默认参数的完整处理链（模糊 + 调色 + 底色）
+        var p = new GlassParams();
+        byte[] processed = ImageOps.BoxBlur(backdrop, W, H, p.BlurRadius / p.Downsample, p.BlurPasses);
+        ImageOps.ApplySaturationBrightness(processed, p.Saturation, p.Brightness);
+        GlassSurface.ApplyGlassTintForTest(processed, p);
+
+        var after = GlassSurface.Measure(processed);
+
+        Report($"★ 处理前可见（{before.Mean:0.#}）", before.Ok);
+        Report($"★★ 处理后仍然可见（{after.Mean:0.#}），没被变黑", after.Ok);
+        Report($"★★ 处理后没有整体压暗（{before.Mean:0.#} → {after.Mean:0.#}）",
+               after.Mean >= before.Mean * 0.7);
+
+        // 最关键的回归：亮背景绝不能被压成黑（均值 < 20 就是黑）
+        Report($"★★ 亮背景处理后的均值 > 30（实测 {after.Mean:0.#}）", after.Mean > 30);
     }
 
     // ── 平滑阶跃 ────────────────────────────────────────────────────
@@ -428,6 +509,18 @@ internal static class GlassTests
                                   + $" → 玻璃图 {surface.GlassBitmap.PixelWidth}×{surface.GlassBitmap.PixelHeight}"
                                   + $"，背景图 {(surface.RawBitmap is null ? "无" : "有")}");
                 Console.WriteLine($"     {surface.LastBreakdown}");
+
+                // ★★★ 交付前自检 —— 这就是用户要的"你自己先测一下" ★★★
+                //
+                //   前面测的是"没崩、够快"，这一行测的是**"用户能不能看见"**。
+                //   两者是不同的东西：我连续两轮都做到了前者，用户看到的还是全黑。
+                Console.WriteLine($"  ★ 可见性自检（用户最终看到的画面）：{surface.GlassVisibility}");
+                Console.WriteLine($"    原始抓屏：{surface.RawVisibility}");
+
+                if (!surface.GlassVisibility.Ok)
+                {
+                    Console.WriteLine("  ❌ 玻璃图被判为不可见 —— 交付前必须解决，不能交给用户");
+                }
             }
             else
             {
