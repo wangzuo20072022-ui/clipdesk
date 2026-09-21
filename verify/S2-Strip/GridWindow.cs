@@ -42,9 +42,9 @@ internal sealed class GridWindow : Window
     //   原来是不透明的深灰 —— 玻璃材质垫在下面也看不见，白做。
     //   现在格子本身是一层薄薄的深色膜，玻璃的光泽从底下透上来。
     //   这就是"简约但不失高级感"里"高级感"的来源。
-    private static readonly Color NormalBg = Color.FromArgb(0x8C, 0x2E, 0x2E, 0x2E);
-    private static readonly Color NormalBorder = Color.FromArgb(0x66, 0x9A, 0x9A, 0x9A);
-    private static readonly Color ActiveBg = Color.FromArgb(0xC8, 0x1E, 0x3A, 0x52);
+    private static readonly Color NormalBg = Color.FromArgb(0x28, 0x2E, 0x2E, 0x2E);
+    private static readonly Color NormalBorder = Color.FromArgb(0x78, 0x9A, 0x9A, 0x9A);
+    private static readonly Color ActiveBg = Color.FromArgb(0x88, 0x1E, 0x3A, 0x52);
     private static readonly Color ActiveBorder = Color.FromRgb(0x7A, 0xC8, 0xFF);
 
     private readonly ClipboardHistory _history;
@@ -164,10 +164,8 @@ internal sealed class GridWindow : Window
             }
         }
 
-        // ★ 玻璃层垫在格子**下面**。
-        //
-        //   顺序很重要：先加玻璃（在下），再加格子（在上）。
-        //   格子本身是半透明的深色膜，玻璃的光泽从底下透上来。
+        // ★★ 玻璃图层必须在所有格子**下面**，但它自己的 Root 不能是黑底。
+        //   如果抓屏/上传失败，GlassChrome 才退回黑色；正常成功时由位图完全覆盖。
         _chrome = GlassChrome.Build(_glass, CellSize * Cols, CellSize * Rows);
         outer.Children.Add(_chrome.Root);
         outer.Children.Add(_cellRoot);
@@ -324,7 +322,9 @@ internal sealed class GridWindow : Window
         if (_surface.Render(xPx, yPx, sidePx, sidePx))
         {
             _chrome.AttachBitmaps(_surface);
-            GlassReport = _surface.LastBreakdown;
+            GlassReport = _surface.LastBreakdown
+                        + $"；原图 {_surface.RawAverageBrightness:0.#}"
+                        + $"；玻璃图 {_surface.GlassAverageBrightness:0.#}";
         }
         else
         {

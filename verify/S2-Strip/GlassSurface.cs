@@ -64,7 +64,14 @@ internal sealed class GlassSurface : IDisposable
     public string LastBreakdown { get; private set; } = "(还没渲染过)";
 
     /// <summary>最近一次是否成功。失败时调用方应该退回纯色背景。</summary>
+    /// <summary>最近一次是否成功。失败时调用方应该退回纯色。</summary>
     public bool LastSucceeded { get; private set; }
+
+    /// <summary>原始抓屏图的平均亮度（0~255），用于诊断"抓到了但全黑"。</summary>
+    public double RawAverageBrightness { get; private set; }
+
+    /// <summary>玻璃处理图的平均亮度（0~255），用于诊断是否被错误压黑。</summary>
+    public double GlassAverageBrightness { get; private set; }
 
     public GlassSurface(GlassParams p) => _params = p;
 
@@ -111,6 +118,8 @@ internal sealed class GlassSurface : IDisposable
 
             if (raw is null) return false;
 
+            RawAverageBrightness = AverageBrightness(raw);
+
             int sw = _grabber.Width;      // 降采样后的宽
             int sh = _grabber.Height;
 
@@ -144,6 +153,7 @@ internal sealed class GlassSurface : IDisposable
             var t6 = Stopwatch.StartNew();
             GlassBitmap = Upload(GlassBitmap, processed, sw, sh);
             RawBitmap = Upload(RawBitmap, raw, sw, sh);
+            GlassAverageBrightness = AverageBrightness(processed);
             double msUpload = t6.Elapsed.TotalMilliseconds;
 
             total.Stop();
@@ -242,6 +252,21 @@ internal sealed class GlassSurface : IDisposable
         }
 
         return result;
+    }
+
+    private static double AverageBrightness(byte[] pixels)
+    {
+        if (pixels.Length < 4) return 0;
+
+        long sum = 0;
+        int count = 0;
+        // 每 16 个像素采样一次，诊断不值得再扫第二遍全图
+        for (int i = 0; i + 3 < pixels.Length; i += 64)
+        {
+            sum += (pixels[i] * 29 + pixels[i + 1] * 150 + pixels[i + 2] * 77) >> 8;
+            count++;
+        }
+        return count == 0 ? 0 : (double)sum / count;
     }
 
     /// <summary>

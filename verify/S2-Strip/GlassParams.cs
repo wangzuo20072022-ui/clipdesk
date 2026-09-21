@@ -53,13 +53,13 @@ internal sealed class GlassParams
     ///   1.0 = 完全不透明（那就不叫玻璃了）；
     ///   0.6~0.8 通常最好看 —— 既压得住背景，又明显透光。
     /// </summary>
-    public double BackgroundOpacity { get; set; } = 0.72;
+    public double BackgroundOpacity { get; set; } = 0.90;
 
     /// <summary>
     /// 压暗量（0~1）。玻璃会稍微吸光，纯透亮会显得"塑料"。
     /// 0.1~0.2 会有很明显的质感提升。
     /// </summary>
-    public double Dim { get; set; } = 0.12;
+    public double Dim { get; set; } = 0.03;
 
     // ── 折射（液态玻璃的灵魂）────────────────────────────────────────
 

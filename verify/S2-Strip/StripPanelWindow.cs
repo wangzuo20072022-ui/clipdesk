@@ -57,18 +57,18 @@ internal sealed class StripPanelWindow : Window
     ///   而不是一根刷了白漆的塑料条。
     ///   描边也稍微收了透明度，免得在浅色壁纸上黑得像一道划痕。
     /// </summary>
-    private static readonly Color StripCore = Color.FromArgb(0xD8, 0xE8, 0xE8, 0xE8);   // 亮芯
-    private static readonly Color StripEdge = Color.FromArgb(0xE0, 0x18, 0x18, 0x18);   // 深色描边
+    private static readonly Color StripCore = Color.FromArgb(0x68, 0xE8, 0xE8, 0xE8);   // 亮芯
+    private static readonly Color StripEdge = Color.FromArgb(0xD0, 0x18, 0x18, 0x18);   // 深色描边
 
     // ★ 全部改成半透明（ARGB 第一个分量是 alpha）。
     //   原来是不透明的深灰 —— 玻璃垫在下面也看不见，白做。
     //   现在每条历史本身是一层薄薄的深色膜，玻璃的光泽从底下透上来。
     //   这就是"简约但不失高级感"里"高级感"的来源。
-    private static readonly Color RowBg = Color.FromArgb(0x8C, 0x2E, 0x2E, 0x2E);
-    private static readonly Color RowHover = Color.FromArgb(0xCC, 0x42, 0x4A, 0x56);
-    private static readonly Color RowBorder = Color.FromArgb(0x44, 0x9A, 0x9A, 0x9A);
+    private static readonly Color RowBg = Color.FromArgb(0x38, 0x2E, 0x2E, 0x2E);
+    private static readonly Color RowHover = Color.FromArgb(0x88, 0x42, 0x4A, 0x56);
+    private static readonly Color RowBorder = Color.FromArgb(0x66, 0x9A, 0x9A, 0x9A);
     private static readonly Color Accent = Color.FromRgb(0x8C, 0xD0, 0xFF);
-    private static readonly Color TitleBg = Color.FromArgb(0x66, 0x25, 0x2A, 0x33);
+    private static readonly Color TitleBg = Color.FromArgb(0x48, 0x25, 0x2A, 0x33);
     private static readonly Color TimeFg = Color.FromRgb(0xC0, 0xC0, 0xC0);
     private static readonly Color HintFg = Color.FromRgb(0xC8, 0xC8, 0xC8);
 
@@ -189,7 +189,9 @@ internal sealed class StripPanelWindow : Window
         // ① 面板：铺满窗口。收起时隐藏。
         _panel = new Border
         {
-            Background = new SolidColorBrush(PanelBg),
+            // ★ 玻璃层是面板唯一的底板。这里绝不能再放不透明 PanelBg，
+            //   否则它会把下面 GlassChrome 的背景图完全盖住。
+            Background = Brushes.Transparent,
             Visibility = Visibility.Collapsed,
             ClipToBounds = true,          // ★ S0 的教训：内容越界会把布局撑坏
         };
@@ -261,7 +263,8 @@ internal sealed class StripPanelWindow : Window
     {
         var bar = new Grid
         {
-            Background = new SolidColorBrush(Color.FromRgb(0x24, 0x24, 0x24)),
+            // 标题栏只提供一层很薄的对比膜，不能再盖住玻璃背景。
+            Background = new SolidColorBrush(TitleBg),
         };
         bar.ColumnDefinitions.Add(new ColumnDefinition());
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });

@@ -72,8 +72,10 @@ internal sealed class GlassChrome
     {
         var root = new Grid
         {
-            // 窗口是实心的，万一某层没画满，露出的底色不能是白板
-            Background = new SolidColorBrush(Color.FromRgb(0x10, 0x10, 0x10)),
+            // 窗口是实心的，万一抓屏失败才露出这个底色。
+            // 正常情况下 Image 会被 AttachBitmaps 的原始图完全覆盖，
+            // 这里不能用接近黑色的底色来伪装成功，否则抓屏失败会和正常玻璃混淆。
+            Background = new SolidColorBrush(Color.FromArgb(0x01, 0x10, 0x10, 0x10)),
             ClipToBounds = true,
         };
 
