@@ -1,0 +1,40 @@
+ClipDesk third-party notices
+============================
+
+Some source in RefractionMap.cs is adapted from the open-source project
+liquid-glass-react.
+
+Project: liquid-glass-react
+Author: fivepointseven
+Version: 1.1.1
+License: MIT License
+Project: https://github.com/rdev/liquid-glass-react
+Package: https://www.npmjs.com/package/liquid-glass-react
+
+The C# implementation adapts the SmoothStep and rounded-box signed-distance
+field ideas from src/shader-utils.ts and src/index.tsx. The original is
+JavaScript; this implementation was rewritten in C# and uses floating-point
+coordinates. The production renderer currently does not invoke refraction;
+the adapted helper remains in the source tree for provenance/compatibility.
+
+MIT License
+
+Copyright (c) 2025 fivepointseven
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -1,100 +1,37 @@
 # ClipDesk
 
-一款常驻 Windows 桌面的剪贴板历史工具。
+ClipDesk 是一款常驻 Windows 桌面的剪贴板历史工具。它把最近复制的文本保存在内存中，用轻量的玻璃界面快速取回。
 
-- 平时缩成屏幕右上角一条 `40×4` 像素的小横条，**鼠标穿透**，不挡任何操作
-- 鼠标顶到右上角那条小横条附近、停 0.3 秒 → 展开成亚克力主面板
-- 面板里是最近 20 条复制记录，滚轮翻，点一条就粘回你原本的窗口
-- 按住 `Alt+V` → 鼠标处弹出九宫格，按住滑动鼠标选一格，松开即粘贴
-- 亚克力材质为 Windows 原生，空闲时 CPU / GPU 占用近 0
+当前版本：**v0.1.0（早期可用版）**
 
-> 完整需求、技术方案、风险与退路见 **[CLAUDE.md](CLAUDE.md)**。
+## 下载与启动
 
----
+从 Releases 下载 `ClipDesk-win-x64-v0.1.0.zip`，解压到任意用户可写目录，然后双击 `ClipDesk.exe`。这是 .NET 8 自包含包，不需要另外安装 .NET，也不需要管理员权限。
 
-## 当前状态
+ClipDesk 只支持 Windows 11 22H2（build 22621）及以上的 x64 电脑。首次启动后，屏幕顶部会出现一条很窄的收缩条。
 
-**S0 脊柱探针已就绪，待跑。** 正式代码尚未开始。
+## 使用方式
 
-顺序是**脊柱优先**：先做一个丑但完整的闭环（复制 → Alt+V 弹面板 → 点一条 → 粘回去），
-验掉唯一没有退路的那条（不抢焦点），再回头做有退路的装饰（材质、条子）。
+- 鼠标移到收缩条上并停留约 0.35 秒：展开剪贴板面板。
+- 面板显示最近 20 条文本记录；点击一条会写回剪贴板，不会替你抢焦点，回到原窗口按 `Ctrl+V` 即可粘贴。
+- 按住 `Alt+V`：在鼠标位置打开八方向网格；向某个方向移动后松开，粘贴对应记录；回到中心或按 `Esc` 取消。
+- `Ctrl+Alt+G`：打开玻璃材质调节面板。
+- `Ctrl+Alt+Q`：退出 ClipDesk。
 
-进度看 [docs/技术验证报告.md](docs/技术验证报告.md)。
+## 隐私与限制
 
----
+剪贴板历史只保存在内存中，退出程序后清空，不上传、不共享。材质会根据桌面背景和显示器缩放产生视觉差异。首版已知限制包括混合 DPI 多显示器、远程桌面以及部分旧版 DWM 功能的兼容性尚未全面验证。
 
-## 环境要求
+## 从源码构建
 
-| 项 | 要求 |
-|---|---|
-| 系统 | Windows 11 22H2 及以上（build 22621+） |
-| SDK | [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) |
+环境要求：Windows 11 22H2+、.NET 8 SDK（仓库中的 `global.json` 会锁定 SDK 版本）。
 
-检查 SDK 是否装好：
-
-```bash
-dotnet --list-sdks
+```powershell
+dotnet build src/ClipDesk/ClipDesk.csproj
+dotnet run --project src/ClipDesk/ClipDesk.csproj
+powershell -ExecutionPolicy Bypass -File packaging/publish-win-x64.ps1
 ```
 
-输出里有 `8.0.x` 就说明可以了。**只有运行时不算** —— 运行时跑得起来但编译不了。
-（本机已装 8.0.425，`global.json` 已锁。）
+发布脚本会在干净目录生成 Windows x64 自包含 ZIP。发布包只包含正式应用和必要说明，不包含验证探针、测试源码或开发截图。
 
----
-
-## 怎么跑
-
-### 跑技术验证程序
-
-每个验证程序是一个独立的小项目，回答**一个**具体问题：
-
-```bash
-cd verify/S0-Spine
-dotnet run
-```
-
-S0 会打开一个控制台打印实时日志。按提示操作，操作完 **Ctrl+C** 收尾 ——
-程序会打印一份判定表，把它贴进 [docs/技术验证报告.md](docs/技术验证报告.md)。
-
-### 跑主程序
-
-```bash
-cd src/ClipDesk
-dotnet run
-```
-
-### 打包
-
-见 [packaging/README-打包.md](packaging/README-打包.md)。
-
----
-
-## 目录说明
-
-| 目录 | 放什么 |
-|---|---|
-| `src/ClipDesk/` | 主程序 |
-| `verify/S0-Spine/` | 脊柱探针（当前） |
-| `verify/_archive/` | 上一轮归档的探针，无书面定论 |
-| `docs/` | 技术验证报告 |
-| `reference/_probe/` | 参考项目（Rememory，MIT）—— **只读，不编译** |
-| `packaging/` | MSIX 打包配置与说明 |
-| `tests/` | 单元测试（只测 `Core\`） |
-
-三个架构铁律（写代码时守住）：
-
-1. **`Platform\` 是唯一允许出现 `DllImport` 的文件夹** —— UI 层不写一行 P/Invoke
-2. **`Core\` 不许 `using System.Windows`** —— 状态机和格子映射必须能脱离 UI 单测
-3. **三个窗口的「样式组合」是数据不是代码** —— 一张常量表，每窗口从表里取
-
----
-
-## 两条工作纪律（比技术方案更重要）
-
-1. **判定先落纸再前进。** 没写进 `docs\技术验证报告.md` 的结论等于没跑。
-2. **时间盒到点就走退路。** 有退路的问题不值得深挖；这是上一轮烧掉大量时间的根因。
-
----
-
-## 关于剪贴板数据
-
-历史**只存在内存里，关掉程序就清空**。不落盘、不上传、不共享。
+项目采用 MIT License；第三方移植代码见 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt)。

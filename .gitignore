@@ -8,9 +8,7 @@
 *.userosscache
 *.sln.docstates
 
-# 发布产物
-publish/
-*.publishsettings
+# Release staging and local artifacts
 artifacts/
 
 # ---- MSIX / 打包 ----
