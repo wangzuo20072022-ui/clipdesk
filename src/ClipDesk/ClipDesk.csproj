@@ -3,14 +3,28 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <!-- 托盘菜单用 WinForms 的 NotifyIcon（自包含发布已带该框架，不增加体积） -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- WFAC010：WinForms 分析器建议把 DPI 设置从 manifest 挪到
+         ApplicationHighDpiMode。**这里不能挪** —— 我们用的是 WPF 的
+         Application，不是 WinForms 的，PerMonitorV2 必须在 manifest 里
+         声明才能对整个进程生效（包括条子/面板/九宫格的窗口定位）。
+         WinForms 这边只用了一个 NotifyIcon，不参与窗口布局。 -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <RootNamespace>ClipDesk</RootNamespace>
     <AssemblyName>ClipDesk</AssemblyName>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\ClipDesk.ico</ApplicationIcon>
     <DebugType>embedded</DebugType>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 托盘图标也从嵌入资源读，和 exe 图标用同一个文件 -->
+    <Resource Include="Assets\ClipDesk.ico" />
+  </ItemGroup>
 </Project>

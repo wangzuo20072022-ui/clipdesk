@@ -2,21 +2,33 @@
 
 ClipDesk 是一款常驻 Windows 桌面的剪贴板历史工具。它把最近复制的文本保存在内存中，用轻量的玻璃界面快速取回。
 
-当前版本：**v0.1.0（早期可用版）**
+当前版本：**v0.1.1（安装版）**
 
-## 下载与启动
+## 下载与安装
 
-从 Releases 下载 `ClipDesk-win-x64-v0.1.0.zip`，解压到任意用户可写目录，然后双击 `ClipDesk.exe`。这是 .NET 8 自包含包，不需要另外安装 .NET，也不需要管理员权限。
+从 Releases 下载 `ClipDesk-Setup-v0.1.1.exe`，双击安装。安装程序不需要管理员权限，会把 ClipDesk 装到你的用户目录（`%LocalAppData%\Programs\ClipDesk`），并创建开始菜单快捷方式。
 
-ClipDesk 只支持 Windows 11 22H2（build 22621）及以上的 x64 电脑。首次启动后，屏幕顶部会出现一条很窄的收缩条。
+> **安装时 Windows 可能弹出蓝色的「Windows 已保护你的电脑」提示。** 这是正常的 —— 本版本没有购买代码签名证书，Windows 对任何未签名的安装包都会给这个提示。点「更多信息」→「仍要运行」即可继续。这不是病毒警告，是"我不认识这个发布者"的意思。
+
+安装过程中可以勾选「开机时自动启动 ClipDesk」。装完后从开始菜单启动，屏幕顶部会出现一条很窄的收缩条，右下角托盘会出现 ClipDesk 图标。
+
+ClipDesk 只支持 Windows 11 22H2（build 22621）及以上的 x64 电脑。
 
 ## 使用方式
 
+- **托盘图标**（右下角）：左键或右键单击 → 弹出菜单，可以打开设置中心、开关开机自启、退出程序。
 - 鼠标移到收缩条上并停留约 0.35 秒：展开剪贴板面板。
 - 面板显示最近 20 条文本记录；点击一条会写回剪贴板，不会替你抢焦点，回到原窗口按 `Ctrl+V` 即可粘贴。
 - 按住 `Alt+V`：在鼠标位置打开八方向网格；向某个方向移动后松开，粘贴对应记录；回到中心或按 `Esc` 取消。
-- `Ctrl+Alt+G`：打开玻璃材质调节面板。
+- `Ctrl+Alt+G`：打开设置中心（等同托盘菜单里的「设置…」）。
 - `Ctrl+Alt+Q`：退出 ClipDesk。
+
+## 设置中心
+
+- **常规**：开机时自动启动 ClipDesk（勾选即写入当前用户的启动项，不需要管理员权限）。
+- **玻璃材质**：调节条子、面板、网格的玻璃效果参数，改完点「保存」。
+
+配置存在 `%LocalAppData%\ClipDesk\`，卸载 ClipDesk **不会**删除这个目录，重装后你调好的材质还在。
 
 ## 隐私与限制
 
@@ -29,9 +41,11 @@ ClipDesk 只支持 Windows 11 22H2（build 22621）及以上的 x64 电脑。首
 ```powershell
 dotnet build src/ClipDesk/ClipDesk.csproj
 dotnet run --project src/ClipDesk/ClipDesk.csproj
-powershell -ExecutionPolicy Bypass -File packaging/publish-win-x64.ps1
+powershell -ExecutionPolicy Bypass -File packaging/build-installer.ps1
 ```
 
-发布脚本会在干净目录生成 Windows x64 自包含 ZIP。发布包只包含正式应用和必要说明，不包含验证探针、测试源码或开发截图。
+`build-installer.ps1` 会先做自包含发布，再调用 Inno Setup 编译出 `artifacts/ClipDesk-Setup-v<版本>.exe`。需要先装 [Inno Setup 6 或 7](https://jrsoftware.org/isdl.php)（免费）。
+
+发布包只包含正式应用和必要说明，不包含验证探针、测试源码或开发截图。
 
 项目采用 MIT License；第三方移植代码见 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt)。

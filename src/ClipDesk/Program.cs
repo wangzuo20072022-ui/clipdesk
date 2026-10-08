@@ -63,7 +63,8 @@ internal static class Program
 
     // 九宫格
     private static GridWindow? _grid;
-    private static GlassTuningWindow? _tuning;
+    private static SettingsWindow? _settings;
+    private static TrayIcon? _tray;
     private static bool _altHotkeyRegistered;
     private static volatile bool _altDown;
     private static DateTime _altDownAt;
@@ -80,6 +81,7 @@ internal static class Program
             CreateMessageWindow();
             CreatePanel();
             StartWatcher();
+            CreateTrayIcon();
         };
         _app.Exit += (_, _) => Cleanup();
         _app.Run();
@@ -171,7 +173,7 @@ internal static class Program
                 break;
 
             case WM_HOTKEY when wParam.ToInt32() == TuningHotKeyId:
-                ToggleTuning();
+                OpenSettings();
                 handled = true;
                 break;
 
@@ -493,20 +495,41 @@ internal static class Program
         _lastSequence = GetClipboardSequenceNumber();
     }
 
-    private static void ToggleTuning()    {
-        if (_tuning is null)
+    /// <summary>
+    /// 创建托盘图标。**必须在三个界面就绪之后** —— 图标一出现用户就会去点它，
+    /// 那时候设置中心要能打开。
+    /// </summary>
+    private static void CreateTrayIcon()
+    {
+        try
         {
-            _tuning = new GlassTuningWindow(Glass, RefreshGlassSurfaces);
-            _tuning.Closed += (_, _) => _tuning = null;
-            _tuning.Show();
+            _tray = new TrayIcon(
+                onOpenSettings: () => _app?.Dispatcher.Invoke(OpenSettings),
+                onExit: () => _app?.Dispatcher.Invoke(() => _app.Shutdown()));
         }
-        else if (_tuning.IsVisible)
+        catch (Exception ex)
         {
-            _tuning.Hide();
+            // 托盘图标建不起来不该让整个程序挂掉 —— 条子和热键还能用。
+            Log($"创建托盘图标失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>打开设置中心（托盘菜单和 Ctrl+Alt+G 都走这里）。</summary>
+    private static void OpenSettings()
+    {
+        if (_settings is null)
+        {
+            _settings = new SettingsWindow(Glass, RefreshGlassSurfaces);
+            _settings.Closed += (_, _) => _settings = null;
+            _settings.Show();
+        }
+        else if (_settings.IsVisible)
+        {
+            _settings.Activate();
         }
         else
         {
-            _tuning.Show();
+            _settings.Show();
         }
     }
 
@@ -543,6 +566,11 @@ internal static class Program
             RemoveClipboardFormatListener(_msgHwnd);
         }
         CursorHider.Restore();
+
+        // ★ 托盘图标必须先 Dispose，否则图标会残留在右下角，
+        //   直到用户把鼠标划过去才消失 —— 看起来像没退干净。
+        _tray?.Dispose();
+        _tray = null;
     }
 
 }

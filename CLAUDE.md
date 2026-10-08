@@ -1,8 +1,12 @@
 # ClipDesk — 粘贴板工具
 
 一款常驻 Windows 桌面的剪贴板历史工具。平时缩成屏幕右上角一条几乎看不见的小横条，
-鼠标顶上去停 0.3 秒展开成亚克力面板，显示最近 20 条复制记录；
+鼠标顶上去停 0.3 秒展开成玻璃面板，显示最近 20 条复制记录；
 按住 `Alt+V` 在鼠标处弹出九宫格，滑动鼠标选一格，松开即粘贴。
+右下角托盘有图标，左键弹菜单进设置中心。
+
+**当前版本：v0.1.1（安装版）** —— 分发渠道是 `packaging/build-installer.ps1`
+产出的 Inno Setup 安装包，不再发绿色 ZIP。
 
 > 项目路径固定为 `D:\ClipDesk\`（纯英文，规避 MSIX 打包链路上的中文编码问题）。
 
@@ -262,7 +266,8 @@
 
 功能层已经定稿，现在进入视觉层。用户选择：**所有界面都上玻璃**，但先从
 「模糊 + 高光描边 + 内发光 + 圆角」的简化版开始，折射 / 色散默认关闭；
-通过 `Ctrl+Alt+G` 打开实时滑块面板，满意后保存到 `out/glass.json`。
+通过 `Ctrl+Alt+G` 打开实时滑块面板（现为设置中心的「玻璃材质」区），
+满意后保存到 `%LocalAppData%\ClipDesk\glass.json`。
 
 ### 三个界面
 
@@ -381,63 +386,48 @@ region 只留给真·非矩形。
 
 ## 四、目录结构
 
+> **当前公开树（v0.1.1）**：`verify/` 已从公开树移除（归档在本机
+> `D:\ClipDesk-local-archive\verify-2026-09-29`，历史提交仍可追溯）；
+> `tests/`、`reference/` 只在本地存在，不入库。下面第二节之后描述的
+> `Platform/`、`Core/`、`Views/` 分层是**早期设计稿**，实际实现是
+> `src/ClipDesk/` 下的扁平文件列表。
+
 ```
 D:\ClipDesk\
 ├─ CLAUDE.md                        ← 本文件
-├─ README.md
+├─ README.md                        ← 面向用户
+├─ LICENSE / THIRD-PARTY-NOTICES.txt
 ├─ .gitignore
 ├─ global.json                      ← 锁 SDK 版本
 ├─ docs\
-│   └─ 技术验证报告.md               ← S0~S4 的判定表，边跑边写
-├─ verify\                          ← 阶段0 一次性验证程序（验完保留，不进主程序）
-│   ├─ S0-Spine\                    ← 脊柱：不抢焦点 + 剪贴板 + 粘贴，一次全验
-│   ├─ S1-Material\
-│   ├─ S2-Strip\
-│   ├─ S3-Cost\
-│   ├─ S4-Msix\
-│   └─ _archive\V1-BackdropMatrix\  ← 上一轮留下的，无定论，归档
-├─ reference\                       ← 只读，不编译
-│   └─ _probe\Rememory-main\        ← MIT，借用来源（见第五节）
+│   ├─ FEATURES.md                  ← 用户功能说明
+│   ├─ DEVELOPMENT.md               ← 开发与发布说明
+│   └─ 技术验证报告.md               ← S0~S4 的判定表（历史）
+├─ packaging\
+│   ├─ make-icon.ps1                ← 程序化生成应用图标
+│   ├─ installer.iss                ← Inno Setup 安装脚本
+│   ├─ build-installer.ps1          ← ★ 出安装包（正式渠道）
+│   ├─ publish-win-x64.ps1          ← 出绿色 ZIP（历史渠道）
+│   ├─ README-发布.md
+│   └─ RELEASE-NOTES-v0.1.1.md
 └─ src\ClipDesk\
-    ├─ ClipDesk.csproj              ← net8.0-windows, UseWPF, x64
+    ├─ ClipDesk.csproj              ← net8.0-windows, UseWPF + UseWindowsForms, x64
     ├─ app.manifest                 ← PerMonitorV2 DPI
-    ├─ App.xaml(.cs)                ← 单实例 Mutex、全局异常兜底、三窗口预热
-    ├─ Assets\
-    ├─ Platform\                    ← ★ 唯一允许 P/Invoke 的层
-    │   ├─ NativeMethods.cs
-    │   ├─ WindowEffects.cs         ← ★ 亚克力/圆角/边框/dark mode/扩展样式
-    │   ├─ WindowVisibility.cs      ← ★ DWMWA_CLOAK 显隐（借 Rememory，见第五节）
-    │   ├─ WindowShape.cs           ← SetWindowRgn + DPI 重算
-    │   ├─ FocusGuard.cs            ← NOACTIVATE/TOOLWINDOW/HTTRANSPARENT/ShowNoActivate
-    │   ├─ HotKeyService.cs         ← RegisterHotKey + 失败时返回备选键位
-    │   ├─ HiddenMessageWindow.cs   ← ★ 热键 + WM_CLIPBOARDUPDATE 的专用宿主
-    │   ├─ InputInjector.cs         ← SendInput Ctrl+V + 清理 Alt 菜单模式的收尾按键
-    │   ├─ TargetWindowProbe.cs     ← 前台 HWND / 进程完整性级别（UIPI 预判）
-    │   └─ MonitorLayout.cs         ← MonitorFromPoint / 工作区 / 物理↔DIP
-    ├─ Core\                        ← ★ 纯逻辑，无 UI 依赖
-    │   ├─ ClipboardWatcher.cs      ← 监听 + CLIPBRD_E_CANT_OPEN 重试 + 序列号去重
-    │   ├─ HistoryStore.cs          ← 20 条环形缓冲、长度截断、去重合并（仅内存）
-    │   ├─ HistorySelection.cs      ← ★ 多选 → 一次粘贴多条的拼装逻辑
-    │   ├─ Paster.cs                ← 「写回剪贴板 → 注入 Ctrl+V」完整用例
-    │   ├─ EdgeTriggerDetector.cs   ← ★ 顶边+右上角停留 0.3s 状态机
-    │   ├─ AltHoldTracker.cs        ← ★ Alt 按下/松开/超时/异常中断 状态机
-    │   └─ GridSelection.cs         ← ★ 纯函数：鼠标向量 → 宫格号 + 中心死区
-    ├─ Views\
-    │   ├─ StripWindow.xaml(.cs)
-    │   ├─ PanelWindow.xaml(.cs)
-    │   ├─ GridOverlay.xaml(.cs)
-    │   └─ Controls\HistoryItemView.xaml(.cs)
-    ├─ ViewModels\
-    │   ├─ HistoryViewModel.cs
-    │   └─ GridViewModel.cs
-    ├─ Theming\                     ← 含「透明效果被关」时的降级主题
-    └─ Services\
-        ├─ AppShell.cs              ← ★ 三窗口显隐编排、预热、全屏/锁屏暂停
-        └─ Settings.cs              ← 热键、阈值、尺寸（设置持久化，非剪贴板数据）
-├─ tests\ClipDesk.Tests\            ← 只测 Core
-└─ packaging\
-    ├─ Package.appxmanifest         ← runFullTrust + windows.startupTask
-    └─ README-打包.md
+    ├─ Assets\ClipDesk.ico          ← exe 图标 + 托盘图标（同一文件）
+    ├─ Program.cs                   ← 常驻入口、消息窗口、热键、轮询编排
+    ├─ TrayIcon.cs                  ← ★ 托盘图标 + 弹出菜单
+    ├─ AutoStart.cs                 ← ★ 开机自启（HKCU Run）
+    ├─ SettingsWindow.cs            ← ★ 设置中心（常规 + 玻璃材质）
+    ├─ LogFile.cs                   ← %LocalAppData%\ClipDesk\clipdesk.log
+    ├─ NativeMethods.cs             ← ★ 全部 P/Invoke 集中于此
+    ├─ ScreenCapture.cs / CursorHider.cs / ImageOps.cs
+    ├─ GlassParams.cs / GlassSurface.cs / GlassChrome.cs / RefractionMap.cs
+    ├─ StripPanelWindow.cs          ← 条子 + 展开面板
+    ├─ GridWindow.cs                ← Alt+V 九宫格
+    ├─ GridSelection.cs             ← 纯函数：鼠标向量 → 宫格号 + 中心死区
+    ├─ EdgeTriggerStateMachine.cs   ← 顶边停留触发状态机
+    ├─ ClipboardHistory.cs / ClipboardIo.cs
+    └─ Geometry.cs
 ```
 
 ---
@@ -600,6 +590,34 @@ RegisterHotKey(Alt+V) → 弹出不透明普通小窗 → 列出剪贴板最近 
 - 不得后台静默采集用户输入
 - **安装便利性**：MSIX 由商店托管安装与自动更新，用户无需自行装 .NET 运行时
 
+### ⚠️ 这个程序很可能过不了商店沙箱（2026-10-07 评估）
+
+MSIX 应用跑在受限容器里，而 ClipDesk 有三个越界行为：
+
+| 行为 | 风险 |
+|---|---|
+| **`SetSystemCursor` 替换系统鼠标指针** | **最高。** 全局修改系统状态，容器模型基本不允许。八宫格"藏起鼠标指针"的核心体验可能直接做不了 |
+| **全屏抓屏做玻璃背景** | 需要声明受限能力（`graphicsCapture`），审核会额外盘问用途 |
+| **全局热键 `RegisterHotKey`** | 一般可用，但 `Alt+V` 可能与其他程序冲突，审核会关注 |
+
+另外两个现实问题：**常驻后台**要用 MSIX 自己的 `startupTask` 机制（**不能用注册表 Run 键**）；
+**剪贴板监听**在容器内能否稳定收到 `WM_CLIPBOARDUPDATE` 需要实测。
+
+**结论**：不是"打包一下就能上"，而是要为了上架**改掉八宫格的鼠标隐藏方式**。建议先走
+GitHub Release → winget，商店留到最后。
+
+### 其他分发渠道（门槛从低到高）
+
+| 渠道 | 说明 |
+|---|---|
+| **GitHub Releases** | 已在做。零成本、完全可控 |
+| **winget** | 提 PR 到 `microsoft/winget-pkgs`，用户就能 `winget install ClipDesk`。**免费、无需签名、比商店门槛低得多** |
+| Scoop / Chocolatey | 同类，偏开发者用户 |
+| Microsoft Store | 见上面的风险 |
+
+⚠️ **费用与政策未联网核实**（本机搜索/抓取工具当时不可用）。传闻微软已把个人开发者
+注册费降到 0，**请到 Partner Center 注册页亲自确认**，不要采信本文档。
+
 ---
 
 ## 十、决策记录（唯一的事实来源）
@@ -610,7 +628,7 @@ RegisterHotKey(Alt+V) → 弹出不透明普通小窗 → 列出剪贴板最近 
 | # | 决策 | 选择 | 理由 | 退路 | 证据 |
 |---|---|---|---|---|---|
 | D1 | 技术栈 | C# / WPF / .NET 8 | 常驻 40–80MB、空转 CPU≈0、MSIX 约 15MB | 无 | ✅ SDK 8.0.425 已装 |
-| D2 | 亚克力路径 | `DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_TRANSIENTWINDOW` | 与 `DesktopAcrylicController` **产出同样像素，但零依赖、零额外开销** | 半透明深色圆角 | ⬜ S1 |
+| D2 | 亚克力路径 | **自绘玻璃**（抓屏 → 真高斯 → 调色 → 上传） | 系统亚克力会和自绘层叠成两层模糊，实测弃用；自绘可控且三界面一致 | 半透明深色圆角 | ✅ 已上线 |
 | D3 | 窗口显隐 | **`DWMWA_CLOAK` 切换**（借 Rememory） | 不销毁 HWND → 显隐瞬时、无重绘闪烁；正面解决 S2 | `ShowWindow(SW_HIDE/SW_SHOWNOACTIVATE)` | ⬜ S1 |
 | D4 | **不抢焦点** | `WS_EX_NOACTIVATE` + `WS_EX_TOOLWINDOW`，扩展样式在**首次显示前**就位 | 前台窗口全程不变 → 免去 `SetForegroundWindow` / `AttachThreadInput` 那套舞蹈 | **无退路 —— 唯一的地基** | ⬜ **S0/Q1** |
 | D5 | 热键 | `RegisterHotKey(MOD_ALT\|MOD_NOREPEAT, VK_V)` + `GetAsyncKeyState` 轮询松开 | 不用全局钩子（杀软误报 + 商店审核） | `Alt+\`` / `Ctrl+Shift+V` | ⬜ S0/Q5 |
@@ -618,7 +636,7 @@ RegisterHotKey(Alt+V) → 弹出不透明普通小窗 → 列出剪贴板最近 
 | D7 | 粘贴 | `SendInput` 模拟 `Ctrl+V` | 唯一可靠路径 | 无 | ⬜ S0/Q3 |
 | D8 | 历史存储 | **仅内存**，20 条环形缓冲，退出即清空 | 隐私最干净，政策可写得极短 | 无 | ✅ 已定 |
 | D9 | 常驻轮询 | 三段式 0/20/60Hz；**绝不用 `DispatcherTimer`** | 每 tick 在 UI 线程跑会持续唤醒渲染管线，那才是真费电处 | 无 | ⬜ S3 |
-| D10 | 托盘 | `H.NotifyIcon.Wpf` | Rememory 用 WinUIEx.TrayIcon，逻辑等价 | 不要托盘，只留热键 | ⬜ 待定 |
+| D10 | 托盘 | `System.Windows.Forms.NotifyIcon` | 自包含发布本来就带 `Microsoft.WindowsDesktop.App`，用 WinForms 的 `NotifyIcon` **不增加体积**，且它已处理 `TaskbarCreated`（explorer 重启后图标自动回来） | 不要托盘，只留热键 | ✅ 已实现，注册表可见 |
 | D11 | **不用** | 全局钩子 / 亚克力窗口上开 `AllowsTransparency` / `DesktopAcrylicController` | 见 3.1 与第七节 | — | ✅ 已定 |
 
 ---
