@@ -9,7 +9,9 @@
 
 #define AppName        "ClipDesk"
 #define AppVersion     "0.1.1"
-#define AppPublisher   "王佐"
+; 发布者写软件名本身，不写个人姓名 —— 这个字段会显示在
+; 「应用和功能」列表和 UAC 提示里，属于对外的公开信息。
+#define AppPublisher   "ClipDesk"
 #define AppURL         "https://github.com/wangzuo20072022-ui/clipdesk"
 #define AppExeName     "ClipDesk.exe"
 

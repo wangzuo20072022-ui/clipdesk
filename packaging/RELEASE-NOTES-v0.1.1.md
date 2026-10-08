@@ -66,7 +66,7 @@ ClipDesk 终于有自己的图标了 —— 深色圆角底 + 白色剪贴板 + 
 `ClipDesk-Setup-v0.1.1.exe` 的 SHA-256：
 
 ```
-0340a922844f93f498dd811ac8921cafef2dfa19df6242be563af6880f0d5f61
+90708e3111705bbdc0a96358e23c3cb9be4f04fe1b7ed11532b479afe17f2dcd
 ```
 
 文件大小：48.7 MB
